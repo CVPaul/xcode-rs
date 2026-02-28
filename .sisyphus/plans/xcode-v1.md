@@ -80,12 +80,12 @@ Build a Rust binary (`xcode`) that takes a user message, spawns an sbox-sandboxe
 - Test suite: `cargo test` — all passing
 
 ### Definition of Done
-- [ ] `cargo build --release` succeeds with 0 errors
-- [ ] `cargo test` passes all tests (unit + integration)
-- [ ] `cargo clippy` passes with 0 errors
-- [ ] `xcode run --help` shows usage
-- [ ] `xcode run "Create a file called hello.txt with 'Hello World'" --project /tmp/test` creates the file inside sbox
-- [ ] Session is persisted and visible via `xcode session list`
+- [x] `cargo build --release` succeeds with 0 errors
+- [x] `cargo test` passes all tests (unit + integration)
+- [x] `cargo clippy` passes with 0 errors
+- [x] `xcode run --help` shows usage
+- [x] `xcode run "Create a file called hello.txt with 'Hello World'" --project /tmp/test` creates the file inside sbox
+- [x] Session is persisted and visible via `xcode session list`
 
 ### Must Have
 - OpenAI-compatible LLM client with streaming SSE support
@@ -279,12 +279,12 @@ Max Concurrent: 3 (Waves 1 & 2)
   - Tracing subscriber setup: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/
 
   **Acceptance Criteria**:
-  - [ ] `cargo build` succeeds with 0 errors
-  - [ ] `cargo test` passes (even if 0 tests initially)
-  - [ ] `cargo clippy` has 0 errors
-  - [ ] `cargo fmt --check` passes
-  - [ ] All modules listed above exist as files
-  - [ ] `cargo run -- --help` shows CLI with `run` and `session` subcommands
+  - [x] `cargo build` succeeds with 0 errors
+  - [x] `cargo test` passes (even if 0 tests initially)
+  - [x] `cargo clippy` has 0 errors
+  - [x] `cargo fmt --check` passes
+  - [x] All modules listed above exist as files
+  - [x] `cargo run -- --help` shows CLI with `run` and `session` subcommands
 
   **QA Scenarios:**
 
@@ -392,10 +392,10 @@ Max Concurrent: 3 (Waves 1 & 2)
   - clap derive for CLI overrides: https://docs.rs/clap/latest/clap/_derive/index.html
 
   **Acceptance Criteria**:
-  - [ ] `cargo test config` passes all config tests
-  - [ ] Default config JSON is valid and parseable
-  - [ ] Config loads from file → env → CLI in correct precedence
-  - [ ] Missing config file creates default template
+  - [x] `cargo test config` passes all config tests
+  - [x] Default config JSON is valid and parseable
+  - [x] Config loads from file → env → CLI in correct precedence
+  - [x] Missing config file creates default template
 
   **QA Scenarios:**
 
@@ -518,11 +518,11 @@ Max Concurrent: 3 (Waves 1 & 2)
   - async-trait is needed because Rust traits can't have async methods natively yet
 
   **Acceptance Criteria**:
-  - [ ] `cargo test llm` passes all LLM client tests
-  - [ ] Message and ToolCall types serialize/deserialize correctly
-  - [ ] OpenAiProvider can be constructed from Config
-  - [ ] SSE streaming logic handles complete + partial tool calls
-  - [ ] Error types are defined for network/parse/rate-limit errors
+  - [x] `cargo test llm` passes all LLM client tests
+  - [x] Message and ToolCall types serialize/deserialize correctly
+  - [x] OpenAiProvider can be constructed from Config
+  - [x] SSE streaming logic handles complete + partial tool calls
+  - [x] Error types are defined for network/parse/rate-limit errors
 
   **QA Scenarios:**
 
@@ -631,12 +631,12 @@ Max Concurrent: 3 (Waves 1 & 2)
   - serde_json::Value for dynamic JSON: https://docs.rs/serde_json/latest/serde_json/enum.Value.html
 
   **Acceptance Criteria**:
-  - [ ] `cargo test tools` passes all tool tests
-  - [ ] ToolRegistry registers and retrieves tools by name
-  - [ ] `list_definitions()` returns OpenAI-compatible tool definitions
-  - [ ] file_read reads files with line numbers
-  - [ ] file_write creates files and directories
-  - [ ] file_edit replaces strings correctly
+  - [x] `cargo test tools` passes all tool tests
+  - [x] ToolRegistry registers and retrieves tools by name
+  - [x] `list_definitions()` returns OpenAI-compatible tool definitions
+  - [x] file_read reads files with line numbers
+  - [x] file_write creates files and directories
+  - [x] file_edit replaces strings correctly
 
   **QA Scenarios:**
 
@@ -755,12 +755,12 @@ Max Concurrent: 3 (Waves 1 & 2)
   - The sbox README explains the isolation model (HOME/PATH/TMPDIR redirection) which affects how file tools interact with sandboxed files
 
   **Acceptance Criteria**:
-  - [ ] `cargo test sandbox` passes sandbox tests
-  - [ ] `cargo test tools::bash` passes bash tool tests
-  - [ ] NoSandbox mode works without sbox installed
-  - [ ] Bash tool executes commands and returns stdout/stderr/exit_code
-  - [ ] Bash tool respects timeout
-  - [ ] Output truncation works for large outputs
+  - [x] `cargo test sandbox` passes sandbox tests
+  - [x] `cargo test tools::bash` passes bash tool tests
+  - [x] NoSandbox mode works without sbox installed
+  - [x] Bash tool executes commands and returns stdout/stderr/exit_code
+  - [x] Bash tool respects timeout
+  - [x] Output truncation works for large outputs
 
   **QA Scenarios:**
 
@@ -854,11 +854,11 @@ Max Concurrent: 3 (Waves 1 & 2)
   - walkdir crate: https://docs.rs/walkdir/latest/walkdir/ (add to Cargo.toml for directory traversal)
 
   **Acceptance Criteria**:
-  - [ ] `cargo test tools::glob_search` passes
-  - [ ] `cargo test tools::grep_search` passes
-  - [ ] Glob search finds files by pattern with max 100 limit
-  - [ ] Grep search finds content by regex with line numbers
-  - [ ] Invalid regex returns error, not panic
+  - [x] `cargo test tools::glob_search` passes
+  - [x] `cargo test tools::grep_search` passes
+  - [x] Glob search finds files by pattern with max 100 limit
+  - [x] Grep search finds content by regex with line numbers
+  - [x] Invalid regex returns error, not panic
 
   **QA Scenarios:**
 
@@ -1021,12 +1021,12 @@ Max Concurrent: 3 (Waves 1 & 2)
   - The OpenAI function calling docs explain the message protocol (assistant sends tool_calls → you send tool results → assistant continues)
 
   **Acceptance Criteria**:
-  - [ ] `cargo test agent` passes all agent tests
-  - [ ] Mock LlmProvider test: agent calls LLM → receives tool_calls → executes tools → calls LLM again → receives final message → returns
-  - [ ] Max iterations enforced: agent stops after `max_iterations` and returns warning
-  - [ ] Max tool calls enforced: only first N tool_calls executed per response
-  - [ ] Context truncation test: large conversation truncated correctly, system prompt preserved
-  - [ ] Error recovery test: tool returns error → error passed to LLM → LLM continues
+  - [x] `cargo test agent` passes all agent tests
+  - [x] Mock LlmProvider test: agent calls LLM → receives tool_calls → executes tools → calls LLM again → receives final message → returns
+  - [x] Max iterations enforced: agent stops after `max_iterations` and returns warning
+  - [x] Max tool calls enforced: only first N tool_calls executed per response
+  - [x] Context truncation test: large conversation truncated correctly, system prompt preserved
+  - [x] Error recovery test: tool returns error → error passed to LLM → LLM continues
 
   **QA Scenarios:**
 
@@ -1199,13 +1199,13 @@ Max Concurrent: 3 (Waves 1 & 2)
   - The config module (T2) already solved XDG directory resolution — reuse the same pattern for data directories
 
   **Acceptance Criteria**:
-  - [ ] `cargo test session` passes all session tests
-  - [ ] Sessions can be created, retrieved, and listed
-  - [ ] Messages with all roles (system, user, assistant, tool) can be stored and retrieved
-  - [ ] tool_calls JSON round-trip preserves all data
-  - [ ] Session title auto-generated from first user message
-  - [ ] Database created automatically at correct XDG path
-  - [ ] Tests use tempfile for isolation (no shared state)
+  - [x] `cargo test session` passes all session tests
+  - [x] Sessions can be created, retrieved, and listed
+  - [x] Messages with all roles (system, user, assistant, tool) can be stored and retrieved
+  - [x] tool_calls JSON round-trip preserves all data
+  - [x] Session title auto-generated from first user message
+  - [x] Database created automatically at correct XDG path
+  - [x] Tests use tempfile for isolation (no shared state)
 
   **QA Scenarios:**
 
@@ -1375,14 +1375,14 @@ Max Concurrent: 3 (Waves 1 & 2)
   - The sandbox lifecycle (create → use → destroy) MUST be reliable even on error — check SboxSession for Drop impl or add explicit cleanup with a guard.
 
   **Acceptance Criteria**:
-  - [ ] `cargo build --release` succeeds
-  - [ ] `cargo test` passes all existing + new tests
-  - [ ] `xcode --help` shows all subcommands and options
-  - [ ] `xcode run --help` shows message, --project, --no-sandbox, --model, --provider-url, --api-key
-  - [ ] `xcode session list` prints sessions (or empty list)
-  - [ ] `xcode session show <id>` prints messages for a session (or error for missing)
-  - [ ] Missing api_key produces clear error: "API key not configured. Set XCODE_API_KEY or add to config."
-  - [ ] Sandbox cleanup runs even when agent errors
+  - [x] `cargo build --release` succeeds
+  - [x] `cargo test` passes all existing + new tests
+  - [x] `xcode --help` shows all subcommands and options
+  - [x] `xcode run --help` shows message, --project, --no-sandbox, --model, --provider-url, --api-key
+  - [x] `xcode session list` prints sessions (or empty list)
+  - [x] `xcode session show <id>` prints messages for a session (or error for missing)
+  - [x] Missing api_key produces clear error: "API key not configured. Set XCODE_API_KEY or add to config."
+  - [x] Sandbox cleanup runs even when agent errors
 
   **QA Scenarios:**
 
@@ -1530,13 +1530,13 @@ Max Concurrent: 3 (Waves 1 & 2)
   - The integration tests validate the ENTIRE pipeline: CLI → config → LLM → tools → session — they are the ultimate proof that xcode works
 
   **Acceptance Criteria**:
-  - [ ] `cargo test` passes ALL tests (unit from T1-T8 + integration from T10)
-  - [ ] Mock LLM server correctly mimics OpenAI SSE streaming format
-  - [ ] E2E test: `xcode run` with mock server creates a file via tool_call
-  - [ ] E2E test: `xcode run` with mock server handles LLM error gracefully
-  - [ ] E2E test: session is persisted and visible via `xcode session list/show`
-  - [ ] `cargo clippy` passes with 0 warnings
-  - [ ] `cargo fmt --check` passes
+  - [x] `cargo test` passes ALL tests (unit from T1-T8 + integration from T10)
+  - [x] Mock LLM server correctly mimics OpenAI SSE streaming format
+  - [x] E2E test: `xcode run` with mock server creates a file via tool_call
+  - [x] E2E test: `xcode run` with mock server handles LLM error gracefully
+  - [x] E2E test: session is persisted and visible via `xcode session list/show`
+  - [x] `cargo clippy` passes with 0 warnings
+  - [x] `cargo fmt --check` passes
 
   **QA Scenarios:**
 
@@ -1675,14 +1675,14 @@ cargo fmt --check
 ```
 
 ### Final Checklist
-- [ ] All "Must Have" present
-- [ ] All "Must NOT Have" absent
-- [ ] All tests pass
-- [ ] `cargo clippy` clean
-- [ ] `cargo fmt --check` clean
-- [ ] Binary runs and shows help
-- [ ] Config loading works
-- [ ] LLM client connects and streams
-- [ ] Tools execute inside sbox (or without when `--no-sandbox`)
-- [ ] Agent loop completes a simple coding task
-- [ ] Sessions persist across runs
+- [x] All "Must Have" present
+- [x] All "Must NOT Have" absent
+- [x] All tests pass
+- [x] `cargo clippy` clean
+- [x] `cargo fmt --check` clean
+- [x] Binary runs and shows help
+- [x] Config loading works
+- [x] LLM client connects and streams
+- [x] Tools execute inside sbox (or without when `--no-sandbox`)
+- [x] Agent loop completes a simple coding task
+- [x] Sessions persist across runs
