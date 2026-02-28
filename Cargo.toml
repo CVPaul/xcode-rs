@@ -1,7 +1,12 @@
 [package]
-name = "xcode"
+name = "xcodeai"
 version = "0.1.0"
 edition = "2021"
+description = "Autonomous AI coding agent — zero human intervention, sbox sandboxed, OpenAI-compatible"
+license = "MIT"
+keywords = ["ai", "agent", "coding", "autonomous", "llm"]
+categories = ["command-line-utilities", "development-tools"]
+repository = "https://github.com/xqli/xcode"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
