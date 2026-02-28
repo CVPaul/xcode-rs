@@ -59,3 +59,55 @@ src/session/mod.rs, src/session/store.rs, src/sandbox/mod.rs
 - Main.rs implementation uses anyhow::Result for error handling
 - Tokio runtime initialized with #[tokio::main] macro
 - tracing_subscriber initialized at startup for logging
+
+## Task 2: Config Module - COMPLETED ✓
+
+### Implementation Summary
+Replaced stub `src/config.rs` with full config loading implementation supporting:
+- JSON config file persistence
+- Environment variable overrides (XCODE_API_KEY, XCODE_API_BASE, XCODE_MODEL)
+- CLI parameter precedence (highest priority)
+- Automatic default config creation in XDG-compliant location (~/.config/xcode/config.json)
+
+### Key Structs Implemented
+1. **Config**: Main struct with provider, model, project_dir, sandbox, agent fields
+2. **ProviderConfig**: API base URL and key
+3. **SandboxConfig**: Sandbox enablement and path
+4. **AgentConfig**: Agent limits (max_iterations=25, max_tool_calls_per_response=10)
+5. **ConfigOverrides**: CLI override container struct
+
+### Config Loading Precedence
+1. Start with Config::default()
+2. Load from JSON file (creates if missing)
+3. Apply environment variable overrides
+4. Apply CLI parameter overrides (highest priority)
+
+### Test Implementation (5 tests, all passing)
+- **test_default_config**: Verifies defaults (25 iterations, 10 calls/response, sandbox enabled)
+- **test_load_from_file**: Tests JSON file parsing and value propagation
+- **test_env_override**: Tests XCODE_* env var precedence
+- **test_cli_override_takes_precedence**: Verifies CLI wins over env vars
+- **test_sandbox_disable_override**: Tests no_sandbox flag functionality
+
+### Test Isolation Strategy
+Used `static TEST_LOCK: Mutex<()>` to serialize environment variable access across tests.
+Each test acquires lock before modifying environment, preventing race conditions.
+All env vars cleared before and after each test for proper isolation.
+
+### Error Handling
+- anyhow::Context for rich error messages in file I/O
+- Graceful directory creation if config dir doesn't exist
+- JSON parse errors clearly reported with context
+- Missing API keys allowed (empty string in defaults, will fail at runtime if needed)
+
+### Type Traits
+All main types derive:
+- Debug, Clone (required for agent context in future T7)
+- Deserialize, Serialize (for JSON persistence)
+
+### Notes for Future Tasks
+- Config::load() wrapper exists for convenience (marked #[allow(dead_code)])
+- ConfigOverrides is simple struct (not serializable by design)
+- Default config is immediately persisted to disk if file missing
+- Tests use tempfile::TempDir for isolation (no real ~/.config writes)
+- Config suitable for passing to agent in Task 7 with Clone trait

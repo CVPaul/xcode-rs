@@ -221,7 +221,7 @@ Max Concurrent: 3 (Waves 1 & 2)
 
 ---
 
-- [ ] 1. Rust Project Setup + Skeleton
+- [x] 1. Rust Project Setup + Skeleton
 
   **What to do**:
   - Install Rust toolchain if not present (`rustup` check)
@@ -319,7 +319,7 @@ Max Concurrent: 3 (Waves 1 & 2)
   - Files: `Cargo.toml`, `src/**/*.rs`
   - Pre-commit: `cargo build && cargo test && cargo clippy`
 
-- [ ] 2. Config Module (JSON Config Loading)
+- [x] 2. Config Module (JSON Config Loading)
 
   **What to do**:
   - Define config types in `src/config.rs`:
@@ -426,7 +426,7 @@ Max Concurrent: 3 (Waves 1 & 2)
   - Files: `src/config.rs`, `Cargo.toml`
   - Pre-commit: `cargo test`
 
-- [ ] 3. LLM Client (OpenAI-Compatible Streaming)
+- [x] 3. LLM Client (OpenAI-Compatible Streaming)
 
   **What to do**:
   - Create `src/llm/mod.rs` and `src/llm/openai.rs`:
