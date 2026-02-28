@@ -5,5 +5,6 @@
     "ses_35dc96e96ffeCkaqm0dbQ9xo24"
   ],
   "plan_name": "xcode-v1",
-  "agent": "atlas"
+  "agent": "atlas",
+  "worktree_path": "/volume/pt-data/xqli/xcode"
 }
