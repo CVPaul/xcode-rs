@@ -2,7 +2,7 @@ use super::*;
 use anyhow::{bail, Result};
 use reqwest::Client;
 use reqwest_eventsource::{Event, RequestBuilderExt};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -46,6 +46,7 @@ struct StreamChunk {
 #[derive(Deserialize)]
 struct ChunkChoice {
     delta: Delta,
+    #[allow(dead_code)]
     finish_reason: Option<String>,
 }
 
@@ -77,9 +78,9 @@ impl LlmProvider for OpenAiProvider {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
-        let mut retries = 0;
-        let max_retries = 3;
-        let mut delay = 1;
+        let mut retries = 0u32;
+        let max_retries = 3u32;
+        let mut delay = 1u64;
         loop {
             let mut body = json!({
                 "model": self.model,
@@ -101,6 +102,7 @@ impl LlmProvider for OpenAiProvider {
             };
             let mut content = String::new();
             let mut tool_calls: HashMap<usize, ToolCallBuilder> = HashMap::new();
+            let mut retry_request = false;
             while let Some(event) = es.next().await {
                 match event {
                     Ok(Event::Open) => {}
@@ -141,36 +143,31 @@ impl LlmProvider for OpenAiProvider {
                         }
                     }
                     Err(e) => {
-                        if let Some(status) = e.status() {
-                            if status.as_u16() == 429 || status.as_u16() == 503 {
-                                if retries < max_retries {
+                        use reqwest_eventsource::Error as EsError;
+                        match e {
+                            EsError::InvalidStatusCode(status, _) => {
+                                let code = status.as_u16();
+                                if (code == 429 || code == 503) && retries < max_retries {
                                     tokio::time::sleep(Duration::from_secs(delay)).await;
                                     retries += 1;
                                     delay *= 2;
-                                    continue;
-                                } else {
+                                    retry_request = true;
+                                    break;
+                                } else if code == 429 || code == 503 {
                                     return Err(LlmError::RateLimited { retry_after: delay }.into());
+                                } else {
+                                    return Err(LlmError::HttpError { status: code, body: status.to_string() }.into());
                                 }
                             }
-                            let body = e.to_string();
-                            return Err(LlmError::HttpError { status: status.as_u16(), body }.into());
-                        }
-                        return Err(LlmError::ParseError(e.to_string()).into());
-                    Err(e) => {
-                        // reqwest_eventsource::Error does not expose HTTP status, so we only retry on string match
-                        let err_str = e.to_string();
-                        if err_str.contains("429") || err_str.contains("503") {
-                            if retries < max_retries {
-                                tokio::time::sleep(Duration::from_secs(delay)).await;
-                                retries += 1;
-                                delay *= 2;
-                                continue;
-                            } else {
-                                return Err(LlmError::RateLimited { retry_after: delay }.into());
+                            other => {
+                                return Err(LlmError::ParseError(other.to_string()).into());
                             }
                         }
-                        return Err(LlmError::ParseError(err_str).into());
+                    }
                 }
+            }
+            if retry_request {
+                continue;
             }
             let tc = if tool_calls.is_empty() {
                 None
@@ -209,7 +206,7 @@ impl ToolCallBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     #[test]
     fn test_message_serialization() {
@@ -227,10 +224,10 @@ mod tests {
         let tool = Message::tool("abc123", "done");
         let msgs = vec![sys, user, assistant, tool];
         for msg in msgs {
-            let json = serde_json::to_string(&msg).unwrap();
-            let back: Message = serde_json::from_str(&json).unwrap();
+            let json_str = serde_json::to_string(&msg).unwrap();
+            let back: Message = serde_json::from_str(&json_str).unwrap();
             assert_eq!(msg, back);
-            let v: Value = serde_json::from_str(&json).unwrap();
+            let v: Value = serde_json::from_str(&json_str).unwrap();
             assert!(matches!(v["role"].as_str(), Some("system") | Some("user") | Some("assistant") | Some("tool")));
         }
     }
@@ -326,8 +323,8 @@ mod tests {
     #[test]
     fn test_partial_tool_call_assembly() {
         let chunks = vec![
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"file_","arguments":"{"}}}]}}]}"#,
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"write","arguments":"}"}}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"file_","arguments":"{"}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"write","arguments":"}"}}]}}]}"#,
             "[DONE]",
         ];
         let resp = parse_sse_chunks(&chunks);
