@@ -103,14 +103,14 @@ async fn run_command(
     use llm::openai::OpenAiProvider;
     use sandbox::NoSandbox;
     use session::{auto_title, SessionStore};
-    use tools::ToolContext;
-    use tools::ToolRegistry;
     use tools::bash::BashTool;
     use tools::file_edit::FileEditTool;
     use tools::file_read::FileReadTool;
     use tools::file_write::FileWriteTool;
     use tools::glob_search::GlobSearchTool;
     use tools::grep_search::GrepSearchTool;
+    use tools::ToolContext;
+    use tools::ToolRegistry;
 
     // 1. Load config with CLI overrides
     let overrides = ConfigOverrides {
@@ -340,8 +340,7 @@ mod tests {
 
     #[test]
     fn test_cli_session_show() {
-        let cli =
-            Cli::try_parse_from(["xcode", "session", "show", "abc-123"]).unwrap();
+        let cli = Cli::try_parse_from(["xcode", "session", "show", "abc-123"]).unwrap();
         match cli.command {
             Commands::Session {
                 command: SessionCommands::Show { id },

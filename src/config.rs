@@ -74,8 +74,7 @@ impl Config {
         let config_path = if let Some(p) = path {
             p.to_path_buf()
         } else {
-            let base = dirs::config_dir()
-                .context("Could not determine config directory")?;
+            let base = dirs::config_dir().context("Could not determine config directory")?;
             base.join("xcode").join("config.json")
         };
 
@@ -83,8 +82,8 @@ impl Config {
         if config_path.exists() {
             let content = fs::read_to_string(&config_path)
                 .with_context(|| format!("Failed to read config file: {:?}", config_path))?;
-            let file_config: Config = serde_json::from_str(&content)
-                .context("Failed to parse config JSON")?;
+            let file_config: Config =
+                serde_json::from_str(&content).context("Failed to parse config JSON")?;
             config = file_config;
         } else {
             // Create default config file
@@ -151,7 +150,7 @@ mod tests {
     #[test]
     fn test_load_from_file() {
         let _lock = TEST_LOCK.lock().unwrap();
-        
+
         // Clear env vars to avoid test isolation issues
         std::env::remove_var("XCODE_API_KEY");
         std::env::remove_var("XCODE_API_BASE");
@@ -202,7 +201,7 @@ mod tests {
     #[test]
     fn test_env_override() {
         let _lock = TEST_LOCK.lock().unwrap();
-        
+
         // Clear env vars first to ensure test isolation
         std::env::remove_var("XCODE_API_KEY");
         std::env::remove_var("XCODE_API_BASE");
@@ -237,7 +236,7 @@ mod tests {
     #[test]
     fn test_cli_override_takes_precedence() {
         let _lock = TEST_LOCK.lock().unwrap();
-        
+
         // Clear env vars first to ensure test isolation
         std::env::remove_var("XCODE_API_KEY");
         std::env::remove_var("XCODE_API_BASE");
@@ -271,7 +270,7 @@ mod tests {
     #[test]
     fn test_sandbox_disable_override() {
         let _lock = TEST_LOCK.lock().unwrap();
-        
+
         // Clear env vars to avoid test isolation issues
         std::env::remove_var("XCODE_API_KEY");
         std::env::remove_var("XCODE_API_BASE");

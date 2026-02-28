@@ -52,8 +52,7 @@ impl NoSandbox {
 
         // Wait for the process with a timeout
         match tokio::time::timeout(timeout_dur, async {
-            let (stdout_bytes, stderr_bytes) =
-                tokio::join!(read_stdout, read_stderr);
+            let (stdout_bytes, stderr_bytes) = tokio::join!(read_stdout, read_stderr);
             let status = child.wait().await?;
             Ok::<_, anyhow::Error>((stdout_bytes, stderr_bytes, status))
         })
@@ -162,8 +161,7 @@ impl SboxSession {
         };
 
         match tokio::time::timeout(timeout_dur, async {
-            let (stdout_bytes, stderr_bytes) =
-                tokio::join!(read_stdout, read_stderr);
+            let (stdout_bytes, stderr_bytes) = tokio::join!(read_stdout, read_stderr);
             let status = child.wait().await?;
             Ok::<_, anyhow::Error>((stdout_bytes, stderr_bytes, status))
         })
@@ -209,7 +207,11 @@ impl SboxSession {
                 );
             }
             Err(e) => {
-                tracing::warn!("sbox destroy failed for session {}: {}", self.session_name, e);
+                tracing::warn!(
+                    "sbox destroy failed for session {}: {}",
+                    self.session_name,
+                    e
+                );
             }
         }
         self.is_initialized = false;

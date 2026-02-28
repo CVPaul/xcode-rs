@@ -1,6 +1,6 @@
 use crate::tools::{Tool, ToolContext, ToolResult};
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 use globset::Glob;
 use regex::Regex;
 use walkdir::WalkDir;
@@ -103,7 +103,8 @@ impl Tool for GrepSearchTool {
 
             // Apply include glob filter if specified
             if let Some(ref matcher) = include_matcher {
-                let filename = abs_path.file_name()
+                let filename = abs_path
+                    .file_name()
                     .map(|n| n.to_string_lossy())
                     .unwrap_or_default();
                 // Also try matching against the full relative path for patterns like "src/*.rs"
@@ -113,8 +114,8 @@ impl Tool for GrepSearchTool {
                     .to_string_lossy()
                     .to_string();
 
-                let file_matches = matcher.is_match(filename.as_ref())
-                    || matcher.is_match(rel_path.as_str());
+                let file_matches =
+                    matcher.is_match(filename.as_ref()) || matcher.is_match(rel_path.as_str());
 
                 if !file_matches {
                     continue;

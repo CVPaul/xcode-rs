@@ -1,12 +1,12 @@
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub mod bash;
+pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
-pub mod file_edit;
-pub mod bash;
 pub mod glob_search;
 pub mod grep_search;
 
@@ -74,9 +74,9 @@ impl Default for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::file_edit::FileEditTool;
     use crate::tools::file_read::FileReadTool;
     use crate::tools::file_write::FileWriteTool;
-    use crate::tools::file_edit::FileEditTool;
 
     #[test]
     fn test_registry_register_and_get() {

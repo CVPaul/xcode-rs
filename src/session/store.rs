@@ -66,9 +66,9 @@ impl SessionStore {
     }
 
     pub fn get_session(&self, id: &str) -> Result<Option<Session>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, created_at, updated_at FROM sessions WHERE id = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, title, created_at, updated_at FROM sessions WHERE id = ?1")?;
         let mut rows = stmt.query(params![id])?;
         if let Some(row) = rows.next()? {
             let created_str: String = row.get(2)?;
@@ -76,10 +76,8 @@ impl SessionStore {
             Ok(Some(Session {
                 id: row.get(0)?,
                 title: row.get(1)?,
-                created_at: chrono::DateTime::parse_from_rfc3339(&created_str)?
-                    .with_timezone(&Utc),
-                updated_at: chrono::DateTime::parse_from_rfc3339(&updated_str)?
-                    .with_timezone(&Utc),
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_str)?.with_timezone(&Utc),
+                updated_at: chrono::DateTime::parse_from_rfc3339(&updated_str)?.with_timezone(&Utc),
             }))
         } else {
             Ok(None)
@@ -104,10 +102,8 @@ impl SessionStore {
             sessions.push(Session {
                 id,
                 title,
-                created_at: chrono::DateTime::parse_from_rfc3339(&created_str)?
-                    .with_timezone(&Utc),
-                updated_at: chrono::DateTime::parse_from_rfc3339(&updated_str)?
-                    .with_timezone(&Utc),
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_str)?.with_timezone(&Utc),
+                updated_at: chrono::DateTime::parse_from_rfc3339(&updated_str)?.with_timezone(&Utc),
             });
         }
         Ok(sessions)
@@ -168,8 +164,7 @@ impl SessionStore {
                 content,
                 tool_calls,
                 tool_call_id,
-                created_at: chrono::DateTime::parse_from_rfc3339(&created_str)?
-                    .with_timezone(&Utc),
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_str)?.with_timezone(&Utc),
             });
         }
         Ok(messages)
@@ -308,7 +303,9 @@ mod tests {
         let session = store.create_session(None).unwrap();
         assert!(session.title.is_none());
 
-        store.update_session_title(&session.id, "New Title").unwrap();
+        store
+            .update_session_title(&session.id, "New Title")
+            .unwrap();
         let updated = store.get_session(&session.id).unwrap().unwrap();
         assert_eq!(updated.title.as_deref(), Some("New Title"));
     }

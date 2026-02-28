@@ -104,7 +104,11 @@ async fn chat_completions(
                 .body(Body::from(body))
                 .unwrap()
         }
-        Some(MockScenario::ToolCallResponse { name, args, final_text }) => {
+        Some(MockScenario::ToolCallResponse {
+            name,
+            args,
+            final_text,
+        }) => {
             // First call: emit a tool call.
             // The agent will execute the tool, then call the LLM again.
             // On the second call the scenario queue is empty → returns "(no scenario)".

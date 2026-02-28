@@ -1,7 +1,7 @@
 use crate::sandbox::NoSandbox;
 use crate::tools::{Tool, ToolContext, ToolResult};
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 
 /// BashTool executes shell commands via the NoSandbox executor.
 /// Commands run as `sh -c <command>` in the session's working directory.

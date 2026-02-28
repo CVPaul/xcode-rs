@@ -1,14 +1,14 @@
 use super::*;
 use anyhow::{bail, Result};
+use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::Client;
 use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
-use std::time::Duration;
-use async_trait::async_trait;
-use futures_util::StreamExt;
 use std::io::Write;
+use std::time::Duration;
 use thiserror::Error;
 
 pub struct OpenAiProvider {
@@ -24,7 +24,12 @@ impl OpenAiProvider {
             .timeout(Duration::from_secs(300))
             .build()
             .expect("Failed to create HTTP client");
-        Self { api_base, api_key, model, client }
+        Self {
+            api_base,
+            api_key,
+            model,
+            client,
+        }
     }
 }
 
@@ -91,7 +96,8 @@ impl LlmProvider for OpenAiProvider {
                 body["tools"] = serde_json::to_value(tools)?;
                 body["tool_choice"] = json!("auto");
             }
-            let request = self.client
+            let request = self
+                .client
                 .post(format!("{}/chat/completions", self.api_base))
                 .header("Authorization", format!("Bearer {}", self.api_key))
                 .header("Content-Type", "application/json")
@@ -113,7 +119,11 @@ impl LlmProvider for OpenAiProvider {
                         }
                         let chunk: StreamChunk = match serde_json::from_str(&msg.data) {
                             Ok(c) => c,
-                            Err(e) => return Err(LlmError::ParseError(format!("{}: {}", msg.data, e)).into()),
+                            Err(e) => {
+                                return Err(
+                                    LlmError::ParseError(format!("{}: {}", msg.data, e)).into()
+                                )
+                            }
                         };
                         for choice in chunk.choices {
                             let delta = choice.delta;
@@ -124,7 +134,9 @@ impl LlmProvider for OpenAiProvider {
                             }
                             if let Some(partials) = delta.tool_calls {
                                 for partial in partials {
-                                    let entry = tool_calls.entry(partial.index).or_insert_with(ToolCallBuilder::default);
+                                    let entry = tool_calls
+                                        .entry(partial.index)
+                                        .or_insert_with(ToolCallBuilder::default);
                                     if let Some(id) = partial.id {
                                         entry.id = Some(id);
                                     }
@@ -157,7 +169,11 @@ impl LlmProvider for OpenAiProvider {
                                 } else if code == 429 || code == 503 {
                                     return Err(LlmError::RateLimited { retry_after: delay }.into());
                                 } else {
-                                    return Err(LlmError::HttpError { status: code, body: status.to_string() }.into());
+                                    return Err(LlmError::HttpError {
+                                        status: code,
+                                        body: status.to_string(),
+                                    }
+                                    .into());
                                 }
                             }
                             other => {
@@ -176,7 +192,11 @@ impl LlmProvider for OpenAiProvider {
                 Some(tool_calls.into_iter().map(|(_, b)| b.build()).collect())
             };
             return Ok(LlmResponse {
-                content: if content.is_empty() { None } else { Some(content) },
+                content: if content.is_empty() {
+                    None
+                } else {
+                    Some(content)
+                },
                 tool_calls: tc,
             });
         }
@@ -229,7 +249,10 @@ mod tests {
             let back: Message = serde_json::from_str(&json_str).unwrap();
             assert_eq!(msg, back);
             let v: Value = serde_json::from_str(&json_str).unwrap();
-            assert!(matches!(v["role"].as_str(), Some("system") | Some("user") | Some("assistant") | Some("tool")));
+            assert!(matches!(
+                v["role"].as_str(),
+                Some("system") | Some("user") | Some("assistant") | Some("tool")
+            ));
         }
     }
 
@@ -263,7 +286,9 @@ mod tests {
                 }
                 if let Some(partials) = delta.tool_calls {
                     for partial in partials {
-                        let entry = tool_calls.entry(partial.index).or_insert_with(ToolCallBuilder::default);
+                        let entry = tool_calls
+                            .entry(partial.index)
+                            .or_insert_with(ToolCallBuilder::default);
                         if let Some(id) = partial.id {
                             entry.id = Some(id);
                         }
@@ -288,7 +313,11 @@ mod tests {
             Some(tool_calls.into_iter().map(|(_, b)| b.build()).collect())
         };
         LlmResponse {
-            content: if content.is_empty() { None } else { Some(content) },
+            content: if content.is_empty() {
+                None
+            } else {
+                Some(content)
+            },
             tool_calls: tc,
         }
     }

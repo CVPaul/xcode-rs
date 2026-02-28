@@ -555,7 +555,7 @@ Max Concurrent: 3 (Waves 1 & 2)
   - Files: `src/llm/mod.rs`, `src/llm/openai.rs`, `Cargo.toml`
   - Pre-commit: `cargo test`
 
-- [ ] 4. Tool Trait + File Tools (Read/Write/Edit)
+- [x] 4. Tool Trait + File Tools (Read/Write/Edit)
 
   **What to do**:
   - Define the tool execution trait in `src/tools/mod.rs`:
@@ -671,7 +671,7 @@ Max Concurrent: 3 (Waves 1 & 2)
   - Files: `src/tools/mod.rs`, `src/tools/file_read.rs`, `src/tools/file_write.rs`, `src/tools/file_edit.rs`
   - Pre-commit: `cargo test`
 
-- [ ] 5. Bash Tool + sbox Integration
+- [x] 5. Bash Tool + sbox Integration
 
   **What to do**:
   - Create `src/sandbox/mod.rs` with sbox session management:
@@ -802,7 +802,7 @@ Max Concurrent: 3 (Waves 1 & 2)
   - Files: `src/sandbox/mod.rs`, `src/tools/bash.rs`, `Cargo.toml`
   - Pre-commit: `cargo test`
 
-- [ ] 6. Search Tools (Glob + Grep)
+- [x] 6. Search Tools (Glob + Grep)
 
   **What to do**:
   - Create `src/tools/glob_search.rs`:
@@ -889,7 +889,7 @@ Max Concurrent: 3 (Waves 1 & 2)
   - Files: `src/tools/glob_search.rs`, `src/tools/grep_search.rs`, `src/tools/mod.rs`, `Cargo.toml`
   - Pre-commit: `cargo test`
 
-- [ ] 7. Agent Loop (Orchestrator + Coder)
+- [x] 7. Agent Loop (Orchestrator + Coder)
 
   **What to do**:
   - Create `src/agent/mod.rs` with the core agent trait and types:
@@ -1084,7 +1084,7 @@ Max Concurrent: 3 (Waves 1 & 2)
 ---
 
 
-- [ ] 8. Session Persistence (SQLite)
+- [x] 8. Session Persistence (SQLite)
 
   **What to do**:
   - Create `src/session/mod.rs` with session types and SQLite storage:
@@ -1252,7 +1252,7 @@ Max Concurrent: 3 (Waves 1 & 2)
 ---
 
 
-- [ ] 9. CLI Integration (clap + Full Run Flow)
+- [x] 9. CLI Integration (clap + Full Run Flow)
 
   **What to do**:
   - Rewrite `src/main.rs` to wire everything together using clap derive:
@@ -1432,7 +1432,7 @@ Max Concurrent: 3 (Waves 1 & 2)
 ---
 
 
-- [ ] 10. Integration Tests + End-to-End QA
+- [x] 10. Integration Tests + End-to-End QA
 
   **What to do**:
   - Create `tests/` directory for integration tests (Rust convention: `tests/` at crate root)

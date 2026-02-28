@@ -1,3 +1,4 @@
+mod helpers;
 /// End-to-end integration tests for the `xcode` binary.
 ///
 /// Each test:
@@ -6,9 +7,8 @@
 ///      pointing at the mock server.
 ///   3. Asserts the expected outcome (exit code, files created, session recorded).
 mod mock_llm_server;
-mod helpers;
 
-use helpers::{run_xcode_with_env, output_to_string, assert_file_contains};
+use helpers::{assert_file_contains, output_to_string, run_xcode_with_env};
 use mock_llm_server::{start_mock_server, MockScenario};
 use tempfile::TempDir;
 
@@ -27,9 +27,9 @@ fn provider_args(addr: std::net::SocketAddr) -> [String; 4] {
 /// `xcode run` with a mock that returns plain text should exit 0.
 #[tokio::test]
 async fn test_run_simple_text_response() {
-    let (addr, _state) = start_mock_server(vec![
-        MockScenario::TextResponse("Task completed successfully.".to_string()),
-    ])
+    let (addr, _state) = start_mock_server(vec![MockScenario::TextResponse(
+        "Task completed successfully.".to_string(),
+    )])
     .await;
 
     let project_dir = TempDir::new().unwrap();
@@ -43,13 +43,17 @@ async fn test_run_simple_text_response() {
         &[
             "run",
             "--no-sandbox",
-            "--provider-url", &format!("http://127.0.0.1:{}/v1", port),
-            "--api-key", "testkey",
-            "--project", &project_path,
+            "--provider-url",
+            &format!("http://127.0.0.1:{}/v1", port),
+            "--api-key",
+            "testkey",
+            "--project",
+            &project_path,
             "hello",
         ],
         &[("HOME", &home_path)],
-    ).await;
+    )
+    .await;
 
     let text = output_to_string(&output);
     assert!(
@@ -66,13 +70,11 @@ async fn test_run_simple_text_response() {
 /// create the specified file in the project directory.
 #[tokio::test]
 async fn test_run_creates_file_via_tool_call() {
-    let (addr, _state) = start_mock_server(vec![
-        MockScenario::ToolCallResponse {
-            name: "file_write".to_string(),
-            args: r#"{"path":"hello.txt","content":"Hello World"}"#.to_string(),
-            final_text: "Done".to_string(),
-        },
-    ])
+    let (addr, _state) = start_mock_server(vec![MockScenario::ToolCallResponse {
+        name: "file_write".to_string(),
+        args: r#"{"path":"hello.txt","content":"Hello World"}"#.to_string(),
+        final_text: "Done".to_string(),
+    }])
     .await;
 
     let project_dir = TempDir::new().unwrap();
@@ -86,13 +88,17 @@ async fn test_run_creates_file_via_tool_call() {
         &[
             "run",
             "--no-sandbox",
-            "--provider-url", &format!("http://127.0.0.1:{}/v1", port),
-            "--api-key", "testkey",
-            "--project", &project_path,
+            "--provider-url",
+            &format!("http://127.0.0.1:{}/v1", port),
+            "--api-key",
+            "testkey",
+            "--project",
+            &project_path,
             "create hello.txt",
         ],
         &[("HOME", &home_path)],
-    ).await;
+    )
+    .await;
 
     let text = output_to_string(&output);
     assert!(
@@ -118,10 +124,7 @@ async fn test_run_creates_file_via_tool_call() {
 /// with a user-friendly error message (not a panic/stack trace).
 #[tokio::test]
 async fn test_run_handles_llm_error() {
-    let (addr, _state) = start_mock_server(vec![
-        MockScenario::ErrorResponse(500),
-    ])
-    .await;
+    let (addr, _state) = start_mock_server(vec![MockScenario::ErrorResponse(500)]).await;
 
     let project_dir = TempDir::new().unwrap();
     let home_dir = TempDir::new().unwrap();
@@ -134,13 +137,17 @@ async fn test_run_handles_llm_error() {
         &[
             "run",
             "--no-sandbox",
-            "--provider-url", &format!("http://127.0.0.1:{}/v1", port),
-            "--api-key", "testkey",
-            "--project", &project_path,
+            "--provider-url",
+            &format!("http://127.0.0.1:{}/v1", port),
+            "--api-key",
+            "testkey",
+            "--project",
+            &project_path,
             "test error handling",
         ],
         &[("HOME", &home_path)],
-    ).await;
+    )
+    .await;
 
     assert!(
         !output.status.success(),
@@ -163,9 +170,9 @@ async fn test_run_handles_llm_error() {
 /// newly created session (not "No sessions found").
 #[tokio::test]
 async fn test_session_persisted_after_run() {
-    let (addr, _state) = start_mock_server(vec![
-        MockScenario::TextResponse("Persisted successfully.".to_string()),
-    ])
+    let (addr, _state) = start_mock_server(vec![MockScenario::TextResponse(
+        "Persisted successfully.".to_string(),
+    )])
     .await;
 
     // Isolate the SQLite database by redirecting HOME.
@@ -181,13 +188,17 @@ async fn test_session_persisted_after_run() {
         &[
             "run",
             "--no-sandbox",
-            "--provider-url", &format!("http://127.0.0.1:{}/v1", port),
-            "--api-key", "testkey",
-            "--project", &project_path,
+            "--provider-url",
+            &format!("http://127.0.0.1:{}/v1", port),
+            "--api-key",
+            "testkey",
+            "--project",
+            &project_path,
             "persist this session",
         ],
         &[("HOME", &home_path)],
-    ).await;
+    )
+    .await;
 
     assert!(
         run_output.status.success(),
@@ -196,10 +207,7 @@ async fn test_session_persisted_after_run() {
     );
 
     // Now list sessions — should NOT be empty.
-    let list_output = run_xcode_with_env(
-        &["session", "list"],
-        &[("HOME", &home_path)],
-    ).await;
+    let list_output = run_xcode_with_env(&["session", "list"], &[("HOME", &home_path)]).await;
 
     assert!(
         list_output.status.success(),

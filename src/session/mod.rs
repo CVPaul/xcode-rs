@@ -18,7 +18,7 @@ pub struct StoredMessage {
     pub session_id: String,
     pub role: String,
     pub content: Option<String>,
-    pub tool_calls: Option<String>,    // JSON-serialized Vec<ToolCall>
+    pub tool_calls: Option<String>, // JSON-serialized Vec<ToolCall>
     pub tool_call_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }

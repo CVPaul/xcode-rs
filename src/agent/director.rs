@@ -1,15 +1,19 @@
+use crate::agent::orchestrator::OrchestratorAgent;
 use crate::agent::Agent;
-use crate::agent::{AgentResult};
+use crate::agent::AgentResult;
 use crate::config::AgentConfig;
-use crate::llm::{Message, LlmProvider};
+use crate::llm::{LlmProvider, Message};
 use crate::tools::{ToolContext, ToolRegistry};
 use anyhow::Result;
-use crate::agent::orchestrator::OrchestratorAgent;
 
-pub struct Director { pub config: AgentConfig }
+pub struct Director {
+    pub config: AgentConfig,
+}
 
 impl Director {
-    pub fn new(config: AgentConfig) -> Self { Director { config } }
+    pub fn new(config: AgentConfig) -> Self {
+        Director { config }
+    }
     pub async fn execute(
         &self,
         user_message: &str,

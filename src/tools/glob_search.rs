@@ -1,9 +1,9 @@
 use crate::tools::{Tool, ToolContext, ToolResult};
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 use globset::Glob;
-use walkdir::WalkDir;
 use std::time::SystemTime;
+use walkdir::WalkDir;
 
 /// GlobSearchTool finds files matching a glob pattern, sorted by modification
 /// time (newest first), up to 100 results.
@@ -82,9 +82,7 @@ impl Tool for GlobSearchTool {
 
             // Get the path relative to root for glob matching
             let abs_path = entry.path();
-            let rel_path = abs_path
-                .strip_prefix(&root)
-                .unwrap_or(abs_path);
+            let rel_path = abs_path.strip_prefix(&root).unwrap_or(abs_path);
 
             // Test the relative path string against the glob
             let rel_str = rel_path.to_string_lossy();
@@ -127,8 +125,8 @@ impl Tool for GlobSearchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn ctx_with_dir(dir: &TempDir) -> ToolContext {
