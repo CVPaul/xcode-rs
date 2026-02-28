@@ -108,6 +108,7 @@ impl LlmProvider for OpenAiProvider {
                     Ok(Event::Open) => {}
                     Ok(Event::Message(msg)) => {
                         if msg.data == "[DONE]" {
+                            es.close();
                             break;
                         }
                         let chunk: StreamChunk = match serde_json::from_str(&msg.data) {
