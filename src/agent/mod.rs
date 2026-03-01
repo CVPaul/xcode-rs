@@ -26,6 +26,11 @@ pub struct AgentResult {
     pub final_message: String,
     pub iterations: u32,
     pub tool_calls_total: u32,
+    /// Number of times the harness injected a "continue" message because the
+    /// LLM stopped mid-task (returned text without `[TASK_COMPLETE]` and without
+    /// tool calls).  Displayed in the completion banner so the user knows the
+    /// agent ran autonomously beyond a single LLM turn.
+    pub auto_continues: u32,
 }
 
 /// Truncate messages to fit within approximate token budget.

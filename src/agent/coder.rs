@@ -22,17 +22,38 @@ impl Agent for CoderAgent {
     }
 
     fn system_prompt(&self) -> &str {
-        // This prompt is intentionally detailed. A weak system prompt produces verbose,
-        // over-explaining agents that ask unnecessary questions and repeat themselves.
-        // A strong prompt produces concise, professional, tool-focused behavior.
+        // ──────────────────────────────────────────────────────────────────────
+        // This prompt is the single most important piece of text in the project.
+        // A weak system prompt produces verbose, over-explaining agents that ask
+        // unnecessary questions and repeat themselves.  A strong prompt produces
+        // concise, professional, tool-focused behavior.
+        //
+        // IMPORTANT: The prompt includes task-planning and completion-signaling
+        // instructions that the auto-continue logic in `run()` depends on.
+        // Specifically, the LLM MUST output `[TASK_COMPLETE]` at the very end
+        // of its final summary.  The `looks_like_task_complete()` helper checks
+        // for that marker to decide whether to stop or inject a "continue"
+        // message.  If you change the marker here, update the helper too.
+        // ──────────────────────────────────────────────────────────────────────
         concat!(
             "You are xcodeai, an expert autonomous software engineer.\n",
+            "\n",
+            "## Task execution workflow\n",
+            "When you receive a task:\n",
+            "1. PLAN — Output a numbered step list (e.g. `## Plan\n1. …\n2. …`).\n",
+            "2. EXECUTE — Work through each step. Before each step output a progress\n",
+            "   header like `## [Step 1/N] <short description>`.\n",
+            "3. VERIFY — After all steps, compile/test/lint to confirm everything works.\n",
+            "4. SUMMARIZE — Give ONE short paragraph of what changed and why.\n",
+            "5. SIGNAL — End your final message with the EXACT marker `[TASK_COMPLETE]`\n",
+            "   on its own line. This tells the harness the entire task is finished.\n",
+            "   NEVER output `[TASK_COMPLETE]` until ALL steps are done and verified.\n",
             "\n",
             "## Core behavior\n",
             "- Complete coding tasks fully and autonomously. Never ask for permission to proceed.\n",
             "- Be concise in all responses. No greetings, no affirmations, no apologies.\n",
             "- When you have enough information to act, act. Do not describe what you are about to do — just do it.\n",
-            "- When the task is done, give a brief summary of exactly what changed and why. One short paragraph.\n",
+            "- Do NOT stop after completing one step. Continue immediately to the next step.\n",
             "\n",
             "## Tool use\n",
             "- Read files before editing them. Never guess at file contents.\n",
@@ -52,7 +73,8 @@ impl Agent for CoderAgent {
             "- Do not ask clarifying questions during execution — make a reasonable decision and proceed.\n",
             "- If you truly cannot proceed without critical missing information, use the `question` tool to ask ONE concise question with selectable options. Do not list multiple questions. Wait for the answer before asking anything else.\n",
             "- Do not repeat the user's instructions back to them.\n",
-            "- Do not explain what a tool does — just use it.\n"
+            "- Do not explain what a tool does — just use it.\n",
+            "- NEVER output `[TASK_COMPLETE]` prematurely. Only use it after ALL steps are done and verified.\n"
         )
     }
 
@@ -66,25 +88,82 @@ impl Agent for CoderAgent {
         let tool_defs = build_tool_definitions(tools);
         let mut iterations = 0u32;
         let mut tool_calls_total = 0u32;
+        let mut auto_continues = 0u32;
         loop {
             truncate_messages(messages, 400_000);
             let response = llm.chat_completion(messages, &tool_defs).await?;
-            if response.tool_calls.is_none()
-                || response
-                    .tool_calls
-                    .as_ref()
-                    .map(|t| t.is_empty())
-                    .unwrap_or(true)
-            {
-                let final_msg = response
+
+            // ── No tool calls → the LLM returned text only ──────────────────
+            // This is either:
+            //   (a) The plan + first step description (before any tools are used)
+            //   (b) An intermediate summary between steps
+            //   (c) The final summary with `[TASK_COMPLETE]` marker
+            //
+            // For (a) and (b), we inject a "continue" message and loop back
+            // so the LLM keeps working autonomously.
+            // For (c), we return the result and stop.
+            let has_tool_calls = response
+                .tool_calls
+                .as_ref()
+                .map(|tc| !tc.is_empty())
+                .unwrap_or(false);
+
+            if !has_tool_calls {
+                let text = response
                     .content
                     .unwrap_or_else(|| "Task completed.".to_string());
-                println!("{}", final_msg);
-                return Ok(AgentResult {
-                    final_message: final_msg,
-                    iterations,
-                    tool_calls_total,
-                });
+
+                // NOTE: Do NOT println! here — the content was already streamed
+                // to stdout in real time by openai.rs (when stream_print=true).
+                // Printing again would duplicate the output.
+
+                // Check if the LLM signaled full task completion.
+                if looks_like_task_complete(&text)
+                    || auto_continues >= self.config.max_auto_continues
+                {
+                    // If we hit max auto-continues, log a warning so the user
+                    // knows why we stopped before seeing [TASK_COMPLETE].
+                    if auto_continues >= self.config.max_auto_continues
+                        && !looks_like_task_complete(&text)
+                    {
+                        tracing::warn!(
+                            "Reached max auto-continues ({}). Stopping.",
+                            self.config.max_auto_continues
+                        );
+                        eprintln!(
+                            "\n  {} {}",
+                            console::style("!").yellow().bold(),
+                            console::style(format!(
+                                "Reached auto-continue limit ({}). The task may not be fully complete.",
+                                self.config.max_auto_continues
+                            )).yellow(),
+                        );
+                    }
+                    return Ok(AgentResult {
+                        final_message: text,
+                        iterations,
+                        tool_calls_total,
+                        auto_continues,
+                    });
+                }
+
+                // Not complete — push the assistant's text into history and
+                // inject a "continue" message so the LLM picks up where it
+                // left off.  The separator printed below is visible in the
+                // terminal, giving the user a visual cue that the agent is
+                // still working autonomously.
+                messages.push(Message::assistant(Some(text), None));
+                messages.push(Message::user(
+                    "Continue with the next step. Do not repeat what you already did.",
+                ));
+
+                auto_continues += 1;
+                eprintln!(
+                    "\n  {} {}",
+                    console::style("▶").cyan(),
+                    console::style("auto-continuing…").dim(),
+                );
+                continue;
             }
             messages.push(Message::assistant(
                 response.content.clone(),
@@ -181,6 +260,7 @@ impl Agent for CoderAgent {
                     final_message: warning,
                     iterations,
                     tool_calls_total,
+                    auto_continues,
                 });
             }
         }
@@ -194,6 +274,25 @@ fn build_tool_definitions(tools: &ToolRegistry) -> Vec<ToolDefinition> {
         .into_iter()
         .filter_map(|v| serde_json::from_value(v).ok())
         .collect()
+}
+
+/// Check if the LLM's text response indicates the entire task is complete.
+/// The system prompt instructs the LLM to output `[TASK_COMPLETE]` on its own
+/// line at the very end of its final summary.  We also accept common variations
+/// like casing differences and surrounding whitespace.
+///
+/// Returns `true` if the text contains the completion marker, meaning the
+/// auto-continue loop should stop and return the result to the user.
+fn looks_like_task_complete(text: &str) -> bool {
+    // Primary check: the exact marker the system prompt requests.
+    let lower = text.to_lowercase();
+    if lower.contains("[task_complete]") {
+        return true;
+    }
+    // Fallback heuristics for models that rephrase the marker.
+    // These are intentionally conservative — we'd rather auto-continue
+    // one extra time than stop prematurely.
+    false
 }
 
 /// Format a compact, single-line preview of JSON tool arguments for display.
@@ -464,7 +563,7 @@ mod tests {
             let mut r = self.responses.lock().unwrap();
             if r.is_empty() {
                 return Ok(LlmResponse {
-                    content: Some("done".to_string()),
+                    content: Some("done [TASK_COMPLETE]".to_string()),
                     tool_calls: None,
                 });
             }
@@ -516,6 +615,7 @@ mod tests {
         AgentConfig {
             max_iterations: 5,
             max_tool_calls_per_response: 3,
+            max_auto_continues: 5,
         }
     }
 
@@ -527,7 +627,7 @@ mod tests {
                 tool_calls: Some(vec![make_tool_call("call1", "echo", r#"{"text":"hello"}"#)]),
             },
             LlmResponse {
-                content: Some("Task complete!".to_string()),
+                content: Some("Task complete! [TASK_COMPLETE]".to_string()),
                 tool_calls: None,
             },
         ]);
@@ -561,6 +661,7 @@ mod tests {
         let config = AgentConfig {
             max_iterations: 3,
             max_tool_calls_per_response: 1,
+            max_auto_continues: 20,
         };
         let agent = CoderAgent::new(config);
         let mut messages = vec![
@@ -586,7 +687,7 @@ mod tests {
                 tool_calls: Some(tool_calls),
             },
             LlmResponse {
-                content: Some("done".to_string()),
+                content: Some("done [TASK_COMPLETE]".to_string()),
                 tool_calls: None,
             },
         ]);
@@ -595,6 +696,7 @@ mod tests {
         let config = AgentConfig {
             max_iterations: 5,
             max_tool_calls_per_response: 2,
+            max_auto_continues: 20,
         };
         let agent = CoderAgent::new(config);
         let mut messages = vec![
@@ -635,7 +737,7 @@ mod tests {
                 tool_calls: Some(vec![make_tool_call("e1", "fail", "{}")]),
             },
             LlmResponse {
-                content: Some("recovered".to_string()),
+                content: Some("recovered [TASK_COMPLETE]".to_string()),
                 tool_calls: None,
             },
         ]);

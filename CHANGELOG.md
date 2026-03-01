@@ -7,6 +7,30 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+
+## [0.8.0] — 2026-03-01
+
+### Added
+
+- **Auto-continue loop** — the agent no longer stops after a single LLM turn. When the LLM returns text without tool calls and without the `[TASK_COMPLETE]` marker, the harness automatically injects a "Continue with the next step" message and loops back. This lets the agent execute complex multi-step tasks fully autonomously.
+  - Safety limit: `max_auto_continues` (default 20) prevents infinite loops.
+  - Visual indicator: `▶ auto-continuing…` printed to stderr so the user sees the agent is still working.
+  - If the limit is reached without `[TASK_COMPLETE]`, a yellow warning is shown.
+- **`[TASK_COMPLETE]` marker** — the system prompt now instructs the LLM to output `[TASK_COMPLETE]` on its own line at the very end of its final summary. The `looks_like_task_complete()` helper checks for this marker to decide when the entire task is truly done.
+- **Task planning workflow in system prompt** — the LLM is now instructed to: PLAN (numbered steps) → EXECUTE (with `## [Step N/M]` headers) → VERIFY → SUMMARIZE → SIGNAL. This gives the user clear progress visibility.
+- **`max_auto_continues` config field** — new field in `AgentConfig` (default 20). Configurable in `~/.config/xcode/config.json` under `agent.max_auto_continues`.
+- **`auto_continues` in AgentResult** — tracks how many auto-continue injections occurred. Displayed in the completion banner when > 0.
+
+### Fixed
+
+- **Content duplication** — in Act mode, LLM text was printed twice: once during SSE streaming and once after the loop ended. Removed the redundant `println!` in `CoderAgent::run()` so streamed output is no longer duplicated.
+
+### Changed
+
+- **Completion banner** — now shows `✓ task complete` (instead of generic `✓ complete`) with auto-continues count when applicable. REPL and `run` modes both updated.
+- **System prompt rewritten** — stronger instructions for autonomous multi-step execution: "Do NOT stop after completing one step", explicit workflow stages, and premature `[TASK_COMPLETE]` guard.
+
+---
 ## [0.7.0] — 2026-02-28
 
 ### Added

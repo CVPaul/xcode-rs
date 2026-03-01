@@ -28,6 +28,10 @@ pub struct SandboxConfig {
 pub struct AgentConfig {
     pub max_iterations: u32,
     pub max_tool_calls_per_response: u32,
+    /// Maximum number of auto-continue injections when the LLM stops mid-task
+    /// without the `[TASK_COMPLETE]` marker.  Prevents infinite loops if the
+    /// LLM never produces the marker.  Default: 20.
+    pub max_auto_continues: u32,
 }
 
 pub struct ConfigOverrides {
@@ -54,6 +58,7 @@ impl Default for Config {
             agent: AgentConfig {
                 max_iterations: 25,
                 max_tool_calls_per_response: 10,
+                max_auto_continues: 20,
             },
         }
     }
@@ -202,6 +207,7 @@ mod tests {
             agent: AgentConfig {
                 max_iterations: 50,
                 max_tool_calls_per_response: 20,
+                max_auto_continues: 20,
             },
         };
 

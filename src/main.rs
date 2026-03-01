@@ -346,9 +346,12 @@ async fn run_command(
             println!();
             print_separator("done");
             ok("Task complete");
-            info(&format!("session   {}", sess.id));
-            info(&format!("iterations  {}", agent_result.iterations));
-            info(&format!("tool calls  {}", agent_result.tool_calls_total));
+            info(&format!("session       {}", sess.id));
+            info(&format!("iterations    {}", agent_result.iterations));
+            info(&format!("tool calls    {}", agent_result.tool_calls_total));
+            if agent_result.auto_continues > 0 {
+                info(&format!("auto-continues {}", agent_result.auto_continues));
+            }
             print_separator("");
             println!("{}", agent_result.final_message);
         }
@@ -1059,14 +1062,31 @@ async fn repl_command(
                                 ctx.store.update_session_timestamp(&sess.id)?;
 
                                 print_separator("done");
+
+                                // Build a stats line showing iterations, tool calls,
+                                // and auto-continues (if any occurred).
+                                let mut stats_parts: Vec<String> = vec![
+                                    format!("{} iterations", agent_result.iterations),
+                                    format!("{} tool calls", agent_result.tool_calls_total),
+                                ];
+                                if agent_result.auto_continues > 0 {
+                                    stats_parts.push(format!(
+                                        "{} auto-continues",
+                                        agent_result.auto_continues
+                                    ));
+                                }
+                                let stats_str = stats_parts
+                                    .iter()
+                                    .map(|s| format!("{}", style(s).dim()))
+                                    .collect::<Vec<_>>()
+                                    .join(&format!("  {}  ", style("·").dim()));
+
                                 println!(
-                                    "   {} {}  {} {}  {} {}",
+                                    "   {} {}  {}  {}",
                                     style("✓").green().bold(),
-                                    style("complete").green(),
+                                    style("task complete").green(),
                                     style("·").dim(),
-                                    style(format!("{} iterations", agent_result.iterations)).dim(),
-                                    style("·").dim(),
-                                    style(format!("{} tool calls", agent_result.tool_calls_total)).dim(),
+                                    stats_str,
                                 );
                                 print_separator("");
 
