@@ -169,9 +169,9 @@ mod tests {
         ToolContext {
             working_dir: dir.path().to_path_buf(),
             sandbox_enabled: false,
+            confirm_destructive: false,
         }
     }
-
     #[tokio::test]
     async fn test_grep_finds_matches() {
         let tmp = TempDir::new().unwrap();

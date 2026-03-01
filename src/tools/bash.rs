@@ -144,9 +144,9 @@ mod tests {
         ToolContext {
             working_dir: PathBuf::from("/tmp"),
             sandbox_enabled: false,
+            confirm_destructive: false,
         }
     }
-
     #[tokio::test]
     async fn test_bash_execute() {
         let tool = BashTool;

@@ -9,6 +9,7 @@ pub mod file_read;
 pub mod file_write;
 pub mod glob_search;
 pub mod grep_search;
+pub mod question;
 
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -21,7 +22,15 @@ pub trait Tool: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     pub working_dir: PathBuf,
+    /// Whether to route tool execution through the sandbox process.
+    /// Currently set but not yet acted upon — sandbox integration is future work.
+    #[allow(dead_code)]
     pub sandbox_enabled: bool,
+    /// When true, the agent will prompt the user for confirmation before executing
+    /// tool calls that are potentially destructive (e.g. `bash rm -rf`, `file_write`
+    /// to an existing file).  Set to false in non-interactive (run subcommand) mode
+    /// or when --yes/-y is passed.
+    pub confirm_destructive: bool,
 }
 
 pub struct ToolResult {

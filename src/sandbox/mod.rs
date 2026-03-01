@@ -85,6 +85,7 @@ impl NoSandbox {
 }
 
 /// sbox-backed sandbox session.
+#[allow(dead_code)]  // Future sandbox integration — not yet wired up
 pub struct SboxSession {
     pub session_name: String,
     pub project_dir: PathBuf,
@@ -92,6 +93,7 @@ pub struct SboxSession {
     pub is_initialized: bool,
 }
 
+#[allow(dead_code)]  // Future sandbox integration — not yet wired up
 impl SboxSession {
     pub fn new(session_name: String, project_dir: PathBuf, sbox_path: String) -> Self {
         SboxSession {

@@ -72,6 +72,79 @@ CLI flags always win.
 
 ## Usage
 
+### Interactive REPL (default)
+
+Just run `xcodeai` with no arguments to enter the interactive loop:
+
+```bash
+xcodeai
+```
+
+```
+  ✦ xcodeai v0.7.0  ·  gpt-4o  ·  /home/user/myproject  ·  no auth
+  Type your task. /help for commands. Ctrl-D to exit.
+──────────────────────────────────────────────────────────────────
+xcodeai› Add error handling to all functions in lib.rs
+(agent runs autonomously...)
+──────────────────────────────────────────────────────────────────
+  ✓ done · 3 iterations · 7 tool calls
+──────────────────────────────────────────────────────────────────
+
+xcodeai› Now write tests for the new error handling
+(agent runs...)
+```
+
+Each session is saved automatically — use `/session` to see the session ID.
+
+You can pass the same flags as `run`:
+
+```bash
+xcodeai --project ./mylib --model deepseek-chat --no-sandbox
+```
+
+#### REPL special commands
+
+| Command | Effect |
+|---|---|
+| `/plan` | Switch to **Plan mode** — discuss & clarify your task with the LLM (no file writes) |
+| `/act` | Switch back to **Act mode** — full tool execution |
+| `/undo` | Undo the last Act-mode run — restores working tree via `git stash pop` (requires git) |
+| `/login` | GitHub Copilot device-code OAuth (browser + code) |
+| `/logout` | Remove saved Copilot credentials |
+| `/connect` | Interactive provider selector — pick from built-in presets |
+| `/model [name]` | Show current model or switch immediately (`/model gpt-4o`) |
+| `/session` | Browse history or start a new session |
+| `/clear` | Start a fresh session (same as "New session" in `/session`) |
+| `/help` | Show all commands + current mode |
+| `/exit` / `/quit` / `/q` | Exit xcodeai |
+| `Ctrl+C` | Clear current input line |
+| `Ctrl+D` | Exit xcodeai |
+
+#### Plan Mode
+
+Plan mode lets you have a free-form discussion with the LLM to clarify your task before executing anything.
+
+```
+xcodeai› /plan
+  ⟳ Switched to Plan mode — discuss your task freely. /act to execute.
+
+[plan] xcodeai› I want to refactor the database module but I'm not sure whether to
+              use the repository pattern or keep it procedural.
+
+(LLM discusses tradeoffs, asks clarifying questions, produces a plan…)
+
+[plan] xcodeai› Let's go with the repository pattern. Generate the plan.
+
+(LLM outlines exact steps…)
+
+[plan] xcodeai› /act
+  ⟳ Switched to Act mode — ready to execute.
+
+xcodeai› Go ahead and implement the plan.
+
+(agent executes autonomously, with context from the discussion above)
+```
+
 ### Run a coding task
 
 ```bash
@@ -115,6 +188,36 @@ Any OpenAI-compatible API endpoint works:
 | Qwen (Alibaba Cloud) | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 | GLM (Zhipu AI) | `https://open.bigmodel.cn/api/paas/v4` |
 | Local (Ollama) | `http://localhost:11434/v1` |
+| **GitHub Copilot** | `copilot` (special sentinel) |
+
+### GitHub Copilot Authentication
+
+xcodeai supports your GitHub Copilot subscription via device-code OAuth — no separate API key needed.
+
+```bash
+# 1. Start xcodeai
+xcodeai --provider-url copilot
+
+# 2. In the REPL, authenticate:
+xcodeai› /login
+
+# GitHub shows a code and URL:
+#   Visit: https://github.com/login/device
+#   Enter code:  XXXX-XXXX
+#
+# After you approve in the browser:
+#   ✓ Logged in to GitHub Copilot.
+
+# 3. Now run tasks normally
+xcodeai> Write a Fibonacci function in main.rs
+```
+
+The OAuth token is saved to `~/.config/xcode/copilot_auth.json`. Future sessions authenticate automatically. The short-lived Copilot API token (~25 min TTL) is refreshed transparently.
+
+```bash
+# Remove saved credentials
+xcodeai› /logout
+```
 
 ---
 
@@ -142,10 +245,7 @@ xcodeai run "task"
    Director
       │
       ▼
-  Orchestrator
-      │
-      ▼
-    Coder ◄──────────────────────┐
+    Coder ◄───────────────────────────┤
       │                          │
       ▼                          │
   LLM call (streaming SSE)       │
@@ -156,8 +256,7 @@ xcodeai run "task"
   └── no  → task complete
 ```
 
-- **Director** — entry point, initialises the Orchestrator
-- **Orchestrator** — sets context, delegates to Coder
+- **Director** — entry point, creates the CoderAgent and executes the task
 - **Coder** — runs the LLM ↔ tool loop until no more tool calls or `max_iterations` reached
 - **Context management** — keeps system prompt + last N messages when approaching the context window limit
 - **Session persistence** — every run is stored in SQLite at `~/.local/share/xcode/sessions.db`
@@ -190,7 +289,7 @@ cd xcode
 export PATH="$HOME/.cargo/bin:$PATH"
 cargo build
 
-# Run tests (62 unit + integration)
+# Run tests (62 unit + 4 integration)
 cargo test
 
 # Release binary
@@ -210,7 +309,7 @@ src/
 ├── config.rs         Config loading with env/CLI overrides
 ├── llm/              LlmProvider trait + OpenAI SSE streaming client
 ├── tools/            Tool trait, ToolRegistry, 6 built-in tools
-├── agent/            Director → Orchestrator → Coder loop
+├── agent/            Director + CoderAgent loop
 ├── session/          Session types + SQLite store
 └── sandbox/          SboxSession + NoSandbox implementations
 tests/

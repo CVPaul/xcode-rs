@@ -133,9 +133,9 @@ mod tests {
         ToolContext {
             working_dir: dir.path().to_path_buf(),
             sandbox_enabled: false,
+            confirm_destructive: false,
         }
     }
-
     #[tokio::test]
     async fn test_glob_search_finds_files() {
         let tmp = TempDir::new().unwrap();
@@ -200,6 +200,7 @@ mod tests {
         let ctx = ToolContext {
             working_dir: PathBuf::from("/tmp"),
             sandbox_enabled: false,
+            confirm_destructive: false,
         };
         let result = tool.execute(args, &ctx).await.unwrap();
         assert!(!result.is_error);

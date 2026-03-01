@@ -22,12 +22,38 @@ impl Agent for CoderAgent {
     }
 
     fn system_prompt(&self) -> &str {
-        "You are an expert software engineer assistant. \
-        You have access to tools to read, write, and edit files, \
-        run bash commands, and search code. \
-        Be autonomous — complete the task without asking for confirmation. \
-        Use tools to implement the requested changes. \
-        When the task is complete, provide a brief summary."
+        // This prompt is intentionally detailed. A weak system prompt produces verbose,
+        // over-explaining agents that ask unnecessary questions and repeat themselves.
+        // A strong prompt produces concise, professional, tool-focused behavior.
+        concat!(
+            "You are xcodeai, an expert autonomous software engineer.\n",
+            "\n",
+            "## Core behavior\n",
+            "- Complete coding tasks fully and autonomously. Never ask for permission to proceed.\n",
+            "- Be concise in all responses. No greetings, no affirmations, no apologies.\n",
+            "- When you have enough information to act, act. Do not describe what you are about to do — just do it.\n",
+            "- When the task is done, give a brief summary of exactly what changed and why. One short paragraph.\n",
+            "\n",
+            "## Tool use\n",
+            "- Read files before editing them. Never guess at file contents.\n",
+            "- Prefer targeted edits (file_edit) over full rewrites (file_write) when only a section needs changing.\n",
+            "- Use glob_search and grep_search to understand the codebase before making assumptions.\n",
+            "- Run bash commands to verify your work: compile, test, lint.\n",
+            "- If a command fails, read the error output carefully and fix the root cause.\n",
+            "\n",
+            "## Code quality\n",
+            "- Match the style, indentation, and conventions already present in the file.\n",
+            "- Do not introduce new dependencies unless explicitly requested.\n",
+            "- Write idiomatic code for the language in use.\n",
+            "- Add comments only where the logic is non-obvious — do not narrate obvious steps.\n",
+            "\n",
+            "## What NOT to do\n",
+            "- Do not produce placeholder code with TODO comments unless instructed.\n",
+            "- Do not ask clarifying questions during execution — make a reasonable decision and proceed.\n",
+            "- If you truly cannot proceed without critical missing information, use the `question` tool to ask ONE concise question with selectable options. Do not list multiple questions. Wait for the answer before asking anything else.\n",
+            "- Do not repeat the user's instructions back to them.\n",
+            "- Do not explain what a tool does — just use it.\n"
+        )
     }
 
     async fn run(
@@ -72,6 +98,43 @@ impl Agent for CoderAgent {
                 tool_calls_total += 1;
                 let args = serde_json::from_str(&tool_call.function.arguments)
                     .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+                // Show the user which tool is being called, with a compact args preview.
+                // This is printed to stderr so it doesn't interfere with captured output
+                // in tests, while still appearing correctly in a real terminal session.
+                let args_preview = format_args_preview(&tool_call.function.arguments);
+                eprintln!(
+                    "  {} {} {}  {}",
+                    console::style("→").cyan().dim(),
+                    console::style(&tool_call.function.name).cyan(),
+                    console::style("(").dim(),
+                    console::style(&args_preview).dim(),
+                );
+
+                // ── Destructive tool call confirmation ─────────────────────────────────
+                // When `ctx.confirm_destructive` is true (interactive REPL without --yes),
+                // check if this call looks potentially dangerous.  If so, prompt the user.
+                // On 'n' / Enter, feed a synthetic "denied" tool result back so the LLM
+                // can adapt its plan rather than getting confused by a missing result.
+                if ctx.confirm_destructive
+                    && is_destructive_call(&tool_call.function.name, &args, &ctx.working_dir)
+                {
+                    if !prompt_confirm(&tool_call.function.name, &args_preview).await {
+                        eprintln!(
+                            "  {} {}",
+                            console::style("✗ skipped").red(),
+                            console::style("(denied by user)").dim(),
+                        );
+                        // Feed a synthetic tool result so the LLM knows this call
+                        // was not executed.  It can then adjust its plan.
+                        messages.push(Message::tool(
+                            tool_call.id.clone(),
+                            "Tool call was denied by the user. Do not retry this specific operation. Ask the user how they would like to proceed instead.".to_string(),
+                        ));
+                        continue;
+                    }
+                }
+
                 let result = if let Some(tool) = tools.get(&tool_call.function.name) {
                     match tool.execute(args, ctx).await {
                         Ok(r) => r,
@@ -86,6 +149,25 @@ impl Agent for CoderAgent {
                         is_error: true,
                     }
                 };
+
+                // Show brief result so the user can see progress.
+                let result_preview: String = result.output.lines().next()
+                    .unwrap_or("")
+                    .chars().take(120).collect();
+                if result.is_error {
+                    eprintln!(
+                        "  {} {}",
+                        console::style("← error:").red().dim(),
+                        console::style(&result_preview).red().dim(),
+                    );
+                } else {
+                    eprintln!(
+                        "  {} {}",
+                        console::style("←").dim(),
+                        console::style(&result_preview).dim(),
+                    );
+                }
+
                 messages.push(Message::tool(tool_call.id.clone(), result.output));
             }
             iterations += 1;
@@ -112,6 +194,243 @@ fn build_tool_definitions(tools: &ToolRegistry) -> Vec<ToolDefinition> {
         .into_iter()
         .filter_map(|v| serde_json::from_value(v).ok())
         .collect()
+}
+
+/// Format a compact, single-line preview of JSON tool arguments for display.
+/// Shows the most important field values, truncated to keep output readable.
+fn format_args_preview(arguments: &str) -> String {
+    // Parse the JSON args and pick out key fields for display.
+    let v: serde_json::Value = match serde_json::from_str(arguments) {
+        Ok(v) => v,
+        Err(_) => return arguments.chars().take(80).collect(),
+    };
+    if let Some(obj) = v.as_object() {
+        // Priority display fields: command/path/pattern are the most meaningful
+        let priority = ["command", "path", "pattern", "old_string", "content"];
+        for key in &priority {
+            if let Some(val) = obj.get(*key) {
+                let s = match val {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                // Take first line only, then truncate
+                let first_line: String = s.lines().next().unwrap_or("").chars().take(80).collect();
+                return format!("{}: {}", key, first_line);
+            }
+        }
+        // Fallback: show all keys joined
+        let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        return keys.join(", ");
+    }
+    // Scalar — just show it
+    arguments.chars().take(80).collect()
+}
+
+// ─── Destructive tool call detection + user confirmation ─────────────────────
+
+/// Returns true if this tool call should be considered "potentially destructive"
+/// and therefore require user confirmation when `ctx.confirm_destructive` is set.
+///
+/// Heuristics:
+/// - `bash` with commands containing deletion/overwrite keywords
+/// - `file_write` when the target file already exists on disk (overwrite)
+///
+/// Conservative on false-negatives: it is better to ask one extra time than to
+/// silently delete something important.  The user can always pass --yes to skip.
+fn is_destructive_call(tool_name: &str, args: &serde_json::Value, working_dir: &std::path::Path) -> bool {
+    match tool_name {
+        "bash" => {
+            // Inspect the command string for patterns that typically destroy data.
+            let cmd = args["command"].as_str().unwrap_or("");
+            // Use word-boundary-style checks: keyword followed by space/tab/end,
+            // or preceded by space/newline/semicolon/pipe/ampersand, to avoid
+            // false-positives on words like "remove_prefix" or filenames.
+            let dangerous_patterns: &[&str] = &[
+                "rm ", "rm\t", "rm\n",      // rm with args
+                "rmdir ", "rmdir\t",        // rmdir
+                "dd ", "dd\t",              // dd (disk dump — destroys devices)
+                "shred ", "shred\t",        // secure delete
+                "wipefs ", "wipefs\t",      // wipe filesystem
+                "mkfs",                     // format filesystem
+                "truncate ", "truncate\t",  // truncate file
+                ":> ",                      // shell truncation idiom
+                "git reset --hard",         // destructive git operations
+                "git clean -f",             // remove untracked files
+                "git push --force",         // force-push
+                "drop table", "DROP TABLE", // SQL drops
+                "drop database", "DROP DATABASE",
+            ];
+            dangerous_patterns.iter().any(|p| cmd.contains(p))
+        }
+        "file_write" => {
+            // Ask when overwriting an existing file (not creating a new one).
+            if let Some(path_str) = args["path"].as_str() {
+                // Resolve relative to working dir
+                let full = if std::path::Path::new(path_str).is_absolute() {
+                    std::path::PathBuf::from(path_str)
+                } else {
+                    working_dir.join(path_str)
+                };
+                full.exists()
+            } else {
+                false
+            }
+        }
+        // file_edit has an old_string guard so it is self-confirming.
+        // file_read, glob_search, grep_search are read-only.
+        _ => false,
+    }
+}
+
+/// Prompt the user for confirmation before a destructive tool call.
+/// Returns true if the user confirmed (typed 'y' or 'Y'), false otherwise.
+///
+/// Uses tokio's blocking task so the async runtime is not blocked while
+/// waiting for stdin.
+async fn prompt_confirm(tool_name: &str, args_preview: &str) -> bool {
+    use std::io::Write;
+    // Print the warning prompt to stderr (same stream as tool-call output)
+    eprint!(
+        "  {} {} {}  {}  {} ",
+        console::style("⚠").yellow().bold(),
+        console::style(tool_name).yellow(),
+        console::style("(").dim(),
+        console::style(args_preview).yellow(),
+        console::style("[y/N]:").dim(),
+    );
+    let _ = std::io::stderr().flush();
+
+    // Read one line from stdin in a blocking thread (avoids blocking the async executor).
+    let answer = tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap_or(0);
+        line.trim().to_lowercase()
+    })
+    .await
+    .unwrap_or_default();
+
+    answer == "y"
+}
+
+// ─── Plan mode system prompt ──────────────────────────────────────────────────
+
+pub const PLAN_SYSTEM_PROMPT: &str = "\
+You are a planning assistant. Help the user think through their task carefully. \
+Ask clarifying questions, read files to understand the codebase, and produce a \
+clear step-by-step plan. Do NOT write, edit, or delete any files. Do NOT run \
+shell commands that modify state. When the plan is ready, tell the user to \
+type /act to switch to Act mode and execute the plan. \
+IMPORTANT: When you need to ask the user a question, use the `question` tool. \
+Provide 2-5 concise options. Ask ONE question at a time — wait for the answer \
+before asking anything else. Never list multiple questions in your response.";
+
+/// Plan conversation turn: one LLM call with the `question` tool available.
+/// If the LLM calls the `question` tool, we execute it (which renders a
+/// dialoguer::Select in the terminal), feed the result back, and call the LLM
+/// again so it can continue based on the user's answer.
+///
+/// Returns the final assistant reply text (after all question-tool loops).
+pub async fn run_plan_turn(
+    messages: &[Message],
+    llm: &dyn LlmProvider,
+    tools: &crate::tools::ToolRegistry,
+    tool_ctx: &crate::tools::ToolContext,
+) -> Result<String> {
+    // Build the message list with plan system prompt prepended.
+    // Keep full history so the LLM has context.
+    let mut plan_messages: Vec<Message> = Vec::new();
+    plan_messages.push(Message::system(PLAN_SYSTEM_PROMPT));
+    // Append conversation history (skip any existing system message at index 0)
+    for msg in messages {
+        if msg.role == crate::llm::Role::System {
+            continue; // replace with plan system prompt
+        }
+        plan_messages.push(msg.clone());
+    }
+    truncate_messages(&mut plan_messages, 400_000);
+
+    // Build tool definitions — in Plan mode we only expose the `question` tool
+    // so the LLM can ask the user structured questions but cannot modify files.
+    let question_tool_defs: Vec<ToolDefinition> = tools
+        .list_definitions()
+        .into_iter()
+        .filter_map(|v| {
+            // Only include the "question" tool in Plan mode
+            if v["function"]["name"].as_str() == Some("question") {
+                serde_json::from_value(v).ok()
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Maximum rounds of question-tool interaction to prevent infinite loops.
+    // Each round = one LLM call that results in a question tool call.
+    const MAX_QUESTION_ROUNDS: u32 = 5;
+    let mut rounds = 0u32;
+
+    loop {
+        let response = llm.chat_completion(&plan_messages, &question_tool_defs).await?;
+
+        // Check if the LLM made any tool calls (i.e. wants to ask a question).
+        let has_tool_calls = response
+            .tool_calls
+            .as_ref()
+            .map(|tc| !tc.is_empty())
+            .unwrap_or(false);
+
+        if !has_tool_calls {
+            // No tool calls — this is a plain text response. Return it.
+            let reply = response
+                .content
+                .unwrap_or_else(|| "(no response)".to_string());
+            return Ok(reply);
+        }
+
+        // The LLM wants to ask a question. Push the assistant message with
+        // tool_calls so the conversation stays well-formed for the next round.
+        plan_messages.push(Message::assistant(
+            response.content.clone(),
+            response.tool_calls.clone(),
+        ));
+
+        // Execute each tool call (should only be `question`, but we handle all).
+        let tool_calls = response.tool_calls.unwrap_or_default();
+        for tool_call in &tool_calls {
+            let args: serde_json::Value =
+                serde_json::from_str(&tool_call.function.arguments)
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+            let result = if let Some(tool) = tools.get(&tool_call.function.name) {
+                match tool.execute(args, tool_ctx).await {
+                    Ok(r) => r,
+                    Err(e) => crate::tools::ToolResult {
+                        output: format!("Tool execution error: {}", e),
+                        is_error: true,
+                    },
+                }
+            } else {
+                crate::tools::ToolResult {
+                    output: format!("Tool '{}' not found", tool_call.function.name),
+                    is_error: true,
+                }
+            };
+
+            // Push the tool result as a message so the LLM sees the user's answer.
+            plan_messages.push(Message::tool(
+                tool_call.id.clone(),
+                result.output,
+            ));
+        }
+
+        rounds += 1;
+        if rounds >= MAX_QUESTION_ROUNDS {
+            return Ok("(Reached maximum question rounds. Please type your response directly.)".to_string());
+        }
+
+        // Loop back to call the LLM again — it now has the user's answer(s)
+        // and can either ask another question or produce its final response.
+    }
 }
 
 #[cfg(test)]
@@ -189,6 +508,7 @@ mod tests {
         ToolContext {
             working_dir: std::path::PathBuf::from("/tmp"),
             sandbox_enabled: false,
+            confirm_destructive: false,
         }
     }
 
@@ -358,5 +678,138 @@ mod tests {
             messages.len()
         );
         assert_eq!(messages[0].role, Role::System);
+    }
+
+    // ── Tests for run_plan_turn ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_plan_turn_plain_text() {
+        // When the LLM returns plain text (no tool calls), run_plan_turn
+        // should return that text directly.
+        let llm = MockLlm::new(vec![
+            LlmResponse {
+                content: Some("Here is your plan: step 1, step 2.".to_string()),
+                tool_calls: None,
+            },
+        ]);
+        let registry = ToolRegistry::new(); // empty — no tools needed
+        let ctx = test_ctx();
+        let messages = vec![Message::user("Help me plan")];
+
+        let result = run_plan_turn(&messages, &llm, &registry, &ctx)
+            .await
+            .unwrap();
+
+        assert!(result.contains("plan"));
+        assert!(result.contains("step 1"));
+    }
+
+    #[tokio::test]
+    async fn test_plan_turn_tool_call_loop() {
+        // Simulates the LLM calling a mock "question" tool, receiving the
+        // result, and then producing a final text response.
+        //
+        // We use a simple mock tool named "question" that returns a canned
+        // answer (avoiding the real dialoguer::Select which needs a TTY).
+        struct MockQuestionTool;
+        #[async_trait]
+        impl Tool for MockQuestionTool {
+            fn name(&self) -> &str { "question" }
+            fn description(&self) -> &str { "Mock question" }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &ToolContext,
+            ) -> Result<ToolResult> {
+                Ok(ToolResult {
+                    output: "User selected: Option A".to_string(),
+                    is_error: false,
+                })
+            }
+        }
+
+        let llm = MockLlm::new(vec![
+            // Round 1: LLM calls the question tool
+            LlmResponse {
+                content: Some("Let me ask you something.".to_string()),
+                tool_calls: Some(vec![make_tool_call(
+                    "q1",
+                    "question",
+                    r#"{"question":"Which approach?","options":[{"label":"A","description":"fast"},{"label":"B","description":"safe"}]}"#,
+                )]),
+            },
+            // Round 2: LLM sees the answer and produces final text
+            LlmResponse {
+                content: Some("Great, you chose Option A. Here is the plan.".to_string()),
+                tool_calls: None,
+            },
+        ]);
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(MockQuestionTool));
+        let ctx = test_ctx();
+        let messages = vec![Message::user("Plan my refactor")];
+
+        let result = run_plan_turn(&messages, &llm, &registry, &ctx)
+            .await
+            .unwrap();
+
+        // The final response should be from round 2
+        assert!(result.contains("Option A"));
+        assert!(result.contains("plan"));
+    }
+
+    #[tokio::test]
+    async fn test_plan_turn_max_question_rounds() {
+        // Verify that run_plan_turn stops after MAX_QUESTION_ROUNDS even if
+        // the LLM keeps calling the question tool indefinitely.
+        struct MockQuestionTool;
+        #[async_trait]
+        impl Tool for MockQuestionTool {
+            fn name(&self) -> &str { "question" }
+            fn description(&self) -> &str { "Mock question" }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &ToolContext,
+            ) -> Result<ToolResult> {
+                Ok(ToolResult {
+                    output: "User selected: something".to_string(),
+                    is_error: false,
+                })
+            }
+        }
+
+        // Return 10 responses that ALL contain tool calls — the function
+        // should bail after MAX_QUESTION_ROUNDS (5).
+        let responses: Vec<LlmResponse> = (0..10)
+            .map(|i| LlmResponse {
+                content: Some(format!("Question {}", i)),
+                tool_calls: Some(vec![make_tool_call(
+                    &format!("q{}", i),
+                    "question",
+                    r#"{"question":"Again?","options":[{"label":"Y","description":"yes"}]}"#,
+                )]),
+            })
+            .collect();
+
+        let llm = MockLlm::new(responses);
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(MockQuestionTool));
+        let ctx = test_ctx();
+        let messages = vec![Message::user("infinite questions")];
+
+        let result = run_plan_turn(&messages, &llm, &registry, &ctx)
+            .await
+            .unwrap();
+
+        // Should contain the safety message about max rounds
+        assert!(result.contains("maximum question rounds"));
     }
 }

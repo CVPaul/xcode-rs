@@ -13,6 +13,7 @@ use mock_llm_server::{start_mock_server, MockScenario};
 use tempfile::TempDir;
 
 /// Helper: common provider args for a mock server at `addr`.
+#[allow(dead_code)]  // useful test helper, not all tests use it
 fn provider_args(addr: std::net::SocketAddr) -> [String; 4] {
     [
         "--no-sandbox".to_string(),

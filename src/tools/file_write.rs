@@ -100,9 +100,9 @@ mod tests {
         ToolContext {
             working_dir: dir.to_path_buf(),
             sandbox_enabled: false,
+            confirm_destructive: false,
         }
     }
-
     #[tokio::test]
     async fn test_file_write_creates_file() {
         let dir = TempDir::new().unwrap();

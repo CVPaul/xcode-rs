@@ -127,6 +127,34 @@ impl Config {
 
         Ok(config)
     }
+    /// Save current config back to the default config file path.
+    /// Only persists provider.api_base and provider.api_key (not CLI-only fields
+    /// like project_dir which should not be written to the shared config file).
+    pub fn save_provider(api_base: &str, api_key: &str) -> Result<()> {
+        let base = dirs::config_dir().context("Could not determine config directory")?;
+        let config_path = base.join("xcode").join("config.json");
+
+        // Load current file config (or default), apply the new provider fields, save.
+        let mut config = if config_path.exists() {
+            let content = fs::read_to_string(&config_path)
+                .with_context(|| format!("Failed to read config file: {:?}", config_path))?;
+            serde_json::from_str::<Config>(&content).unwrap_or_default()
+        } else {
+            Config::default()
+        };
+
+        config.provider.api_base = api_base.to_string();
+        config.provider.api_key = api_key.to_string();
+
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(&config)
+            .context("Failed to serialize config")?;
+        fs::write(&config_path, json)
+            .with_context(|| format!("Failed to write config file: {:?}", config_path))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

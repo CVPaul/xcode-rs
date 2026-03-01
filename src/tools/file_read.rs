@@ -101,9 +101,9 @@ mod tests {
         ToolContext {
             working_dir: dir.to_path_buf(),
             sandbox_enabled: false,
+            confirm_destructive: false,
         }
     }
-
     #[tokio::test]
     async fn test_file_read_existing_file() {
         let mut f = NamedTempFile::new().unwrap();

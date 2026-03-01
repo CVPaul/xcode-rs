@@ -1,4 +1,4 @@
-use crate::llm::{Message, Role, ToolCall};
+use crate::llm::{Message, Role};
 use crate::session::{Session, StoredMessage};
 use anyhow::{Context, Result};
 use chrono::Utc;

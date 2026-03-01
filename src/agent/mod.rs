@@ -1,15 +1,14 @@
-use crate::llm::{LlmProvider, Message, Role, ToolDefinition};
+use crate::llm::{LlmProvider, Message};
 use crate::tools::{ToolContext, ToolRegistry};
 use anyhow::Result;
 use async_trait::async_trait;
 
 pub mod coder;
 pub mod director;
-pub mod orchestrator;
 
-pub use director::Director;
 
 #[async_trait]
+#[allow(dead_code)]  // `name()` is part of the trait API; used by implementations
 pub trait Agent: Send + Sync {
     fn name(&self) -> &str;
     fn system_prompt(&self) -> &str;

@@ -8,14 +8,39 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thiserror::Error;
+use tokio::sync::Mutex;
+
+/// Sentinel value for `api_base` that signals GitHub Copilot mode.
+pub const COPILOT_API_BASE: &str = "copilot";
+const COPILOT_CHAT_URL: &str = "https://api.githubcopilot.com/chat/completions";
+
+// ─── Provider ────────────────────────────────────────────────────────────────
+
+/// Shared Copilot token state managed across async calls.
+#[derive(Default)]
+struct CopilotState {
+    /// The long-lived GitHub OAuth token (persisted to disk).
+    oauth_token: Option<String>,
+    /// Short-lived Copilot API token, refreshed automatically.
+    api_token: Option<crate::auth::CopilotApiToken>,
+}
 
 pub struct OpenAiProvider {
     pub api_base: String,
     pub api_key: String,
     pub model: String,
     client: Client,
+    /// Only populated when `api_base == COPILOT_API_BASE`.
+    copilot: Arc<Mutex<CopilotState>>,
+    /// Set to true when Copilot mode is activated (either at init or via set_copilot_oauth_token).
+    copilot_mode: AtomicBool,
+    /// When true (the default), stream tokens are printed to stdout in real time.
+    /// Set to false in Plan mode so xcodeai can post-process the reply before displaying.
+    pub stream_print: AtomicBool,
 }
 
 impl OpenAiProvider {
@@ -24,14 +49,90 @@ impl OpenAiProvider {
             .timeout(Duration::from_secs(300))
             .build()
             .expect("Failed to create HTTP client");
+        let is_copilot = api_base == COPILOT_API_BASE;
         Self {
             api_base,
             api_key,
             model,
             client,
+            copilot: Arc::new(Mutex::new(CopilotState::default())),
+            copilot_mode: AtomicBool::new(is_copilot),
+            stream_print: AtomicBool::new(true),
         }
     }
+
+    /// Create a Copilot-mode provider from a persisted OAuth token.
+    pub fn new_copilot(oauth_token: String, model: String) -> Self {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(300))
+            .build()
+            .expect("Failed to create HTTP client");
+        let copilot = Arc::new(Mutex::new(CopilotState {
+            oauth_token: Some(oauth_token),
+            api_token: None,
+        }));
+        Self {
+            api_base: COPILOT_API_BASE.to_string(),
+            api_key: String::new(),
+            model,
+            client,
+            copilot,
+            copilot_mode: AtomicBool::new(true),
+            stream_print: AtomicBool::new(true),
+        }
+    }
+
+    /// Returns true if this provider is in GitHub Copilot mode.
+    pub fn is_copilot(&self) -> bool {
+        self.copilot_mode.load(Ordering::Relaxed)
+    }
+
+    /// Enable or disable real-time streaming output to stdout.
+    /// Call with `false` before a Plan-mode LLM call so xcodeai can
+    /// post-process the reply (e.g. render choices via dialoguer) before
+    /// displaying anything.  Always restore to `true` afterwards.
+    pub fn set_stream_print(&self, enabled: bool) {
+        self.stream_print.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Get a fresh Copilot API token, refreshing if expired.
+    /// Returns error if no OAuth token is set (user hasn't run :login).
+    async fn copilot_bearer_token(&self) -> Result<String> {
+        let mut state = self.copilot.lock().await;
+
+        let oauth_token = state
+            .oauth_token
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!(
+                "Not authenticated with GitHub Copilot. Run :login in the REPL."
+            ))?;
+
+        // Refresh if expired or not yet fetched
+        let needs_refresh = state
+            .api_token
+            .as_ref()
+            .map(|t: &crate::auth::CopilotApiToken| t.is_expired())
+            .unwrap_or(true);
+
+        if needs_refresh {
+            let new_token =
+                crate::auth::refresh_copilot_token(&self.client, &oauth_token).await?;
+            state.api_token = Some(new_token);
+        }
+
+        Ok(state.api_token.as_ref().unwrap().token.clone())
+    }
+
+    /// Update the OAuth token (called after :login completes).
+    pub async fn set_copilot_oauth_token(&self, token: String) {
+        let mut state = self.copilot.lock().await;
+        state.oauth_token = Some(token);
+        state.api_token = None; // force refresh on next call
+        self.copilot_mode.store(true, Ordering::Relaxed);
+    }
 }
+
+// ─── Errors ──────────────────────────────────────────────────────────────────
 
 #[derive(Error, Debug)]
 pub enum LlmError {
@@ -42,6 +143,8 @@ pub enum LlmError {
     #[error("Stream parse error: {0}")]
     ParseError(String),
 }
+
+// ─── SSE deserialization ─────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct StreamChunk {
@@ -76,6 +179,8 @@ struct PartialFunction {
     arguments: Option<String>,
 }
 
+// ─── LlmProvider impl ────────────────────────────────────────────────────────
+
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
     async fn chat_completion(
@@ -96,12 +201,25 @@ impl LlmProvider for OpenAiProvider {
                 body["tools"] = serde_json::to_value(tools)?;
                 body["tool_choice"] = json!("auto");
             }
-            let request = self
-                .client
-                .post(format!("{}/chat/completions", self.api_base))
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .header("Content-Type", "application/json")
-                .json(&body);
+
+            // Build request — Copilot needs different URL + auth headers
+            let request = if self.is_copilot() {
+                let bearer = self.copilot_bearer_token().await?;
+                self.client
+                    .post(COPILOT_CHAT_URL)
+                    .header("Authorization", format!("Bearer {}", bearer))
+                    .header("Copilot-Integration-Id", "vscode-chat")
+                    .header("Content-Type", "application/json")
+                    .header("User-Agent", "GithubCopilot/1.155.0")
+                    .json(&body)
+            } else {
+                self.client
+                    .post(format!("{}/chat/completions", self.api_base))
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+            };
+
             let mut es = match request.eventsource() {
                 Ok(es) => es,
                 Err(e) => bail!("Failed to start eventsource: {}", e),
@@ -128,8 +246,13 @@ impl LlmProvider for OpenAiProvider {
                         for choice in chunk.choices {
                             let delta = choice.delta;
                             if let Some(text) = delta.content {
-                                print!("{}", text);
-                                std::io::stdout().flush().ok();
+                                // Only stream to stdout if stream_print is enabled.
+                                // Plan mode disables this so replies can be post-processed
+                                // (e.g. parsed for CHOICES: blocks) before display.
+                                if self.stream_print.load(Ordering::Relaxed) {
+                                    print!("{}", text);
+                                    std::io::stdout().flush().ok();
+                                }
                                 content.push_str(&text);
                             }
                             if let Some(partials) = delta.tool_calls {
@@ -203,6 +326,8 @@ impl LlmProvider for OpenAiProvider {
     }
 }
 
+// ─── Builder ─────────────────────────────────────────────────────────────────
+
 #[derive(Default)]
 struct ToolCallBuilder {
     id: Option<String>,
@@ -223,6 +348,8 @@ impl ToolCallBuilder {
         }
     }
 }
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -361,5 +488,13 @@ mod tests {
         let tc = resp.tool_calls.unwrap();
         assert_eq!(tc[0].function.name, "file_write");
         assert_eq!(tc[0].function.arguments, "{}".to_string());
+    }
+
+    #[test]
+    fn test_is_copilot() {
+        let p = OpenAiProvider::new(COPILOT_API_BASE.to_string(), String::new(), "gpt-4o".to_string());
+        assert!(p.is_copilot());
+        let p2 = OpenAiProvider::new("https://api.openai.com/v1".to_string(), "key".to_string(), "gpt-4o".to_string());
+        assert!(!p2.is_copilot());
     }
 }
