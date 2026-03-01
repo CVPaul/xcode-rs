@@ -3,7 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Top-level config. Every section uses `#[serde(default)]` so that
+/// existing config files written by older versions (missing new fields)
+/// are still loaded successfully — new fields silently get their defaults.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct Config {
     pub provider: ProviderConfig,
     pub model: String,
@@ -13,18 +17,21 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct ProviderConfig {
     pub api_base: String,
     pub api_key: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct SandboxConfig {
     pub enabled: bool,
     pub sbox_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct AgentConfig {
     pub max_iterations: u32,
     pub max_tool_calls_per_response: u32,
@@ -60,6 +67,34 @@ impl Default for Config {
                 max_tool_calls_per_response: 10,
                 max_auto_continues: 20,
             },
+        }
+    }
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        ProviderConfig {
+            api_base: "https://api.openai.com/v1".to_string(),
+            api_key: String::new(),
+        }
+    }
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        SandboxConfig {
+            enabled: true,
+            sbox_path: None,
+        }
+    }
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        AgentConfig {
+            max_iterations: 25,
+            max_tool_calls_per_response: 10,
+            max_auto_continues: 20,
         }
     }
 }
@@ -323,5 +358,55 @@ mod tests {
         let config = Config::load_from_path(Some(&config_path), &overrides).unwrap();
 
         assert!(!config.sandbox.enabled);
+    }
+
+    /// Verify that a config file written by an older version (missing newer
+    /// fields like `max_auto_continues`) still loads correctly — the missing
+    /// fields should silently receive their defaults.
+    #[test]
+    fn test_backwards_compatible_config() {
+        let _lock = TEST_LOCK.lock().unwrap();
+
+        // Clear env vars to avoid test isolation issues
+        std::env::remove_var("XCODE_API_KEY");
+        std::env::remove_var("XCODE_API_BASE");
+        std::env::remove_var("XCODE_MODEL");
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        // Simulate an old v0.7.x config file that lacks max_auto_continues
+        let old_config_json = r#"{
+  "provider": {
+    "api_base": "https://api.openai.com/v1",
+    "api_key": "old-key"
+  },
+  "model": "gpt-4o",
+  "sandbox": {
+    "enabled": false
+  },
+  "agent": {
+    "max_iterations": 25,
+    "max_tool_calls_per_response": 10
+  }
+}"#;
+        fs::write(&config_path, old_config_json).unwrap();
+
+        let overrides = ConfigOverrides {
+            api_key: None,
+            api_base: None,
+            model: None,
+            project_dir: None,
+            no_sandbox: false,
+        };
+        let loaded = Config::load_from_path(Some(&config_path), &overrides).unwrap();
+
+        // Explicitly-set fields should load correctly
+        assert_eq!(loaded.provider.api_key, "old-key");
+        assert_eq!(loaded.agent.max_iterations, 25);
+        assert!(!loaded.sandbox.enabled);
+
+        // Missing field should get default value
+        assert_eq!(loaded.agent.max_auto_continues, 20);
     }
 }
