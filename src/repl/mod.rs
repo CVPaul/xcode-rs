@@ -14,7 +14,7 @@
 use crate::context::AgentContext;
 use crate::llm::openai::COPILOT_API_BASE;
 use crate::session::{Session, SessionStore};
-use crate::ui::{err, info, ok, print_banner, print_separator, warn};
+use crate::ui::{err, info, ok, print_banner, print_separator, print_status_bar, warn};
 use anyhow::Result;
 use console::style;
 // rustyline is no longer used — all input goes through src/repl/input.rs.
@@ -329,6 +329,45 @@ pub async fn repl_command(
             ReplMode::Act => format!("{} ", style("xcodeai›").cyan().bold()),
             ReplMode::Plan => format!("{} ", style("[plan] xcodeai›").yellow().bold()),
         };
+
+        // ── Status bar ─────────────────────────────────────────────────────────
+        // Print a compact info line above the prompt showing cumulative token
+        // usage, MCP servers, and LSP state.  Skipped on first prompt (no tokens).
+        //
+        // We gather the three pieces of data the bar needs:
+        //   1. session_tracker — already in scope above, accumulates token/cost.
+        //   2. MCP server names — from ctx.mcp_clients (a Vec of (name, Arc<Mutex<McpClient>>)).
+        //   3. LSP: check if lsp_client is Some, and what server_command is configured.
+        //
+        // NOTE: ctx.tool_ctx.lsp_client is Arc<Mutex<Option<LspClient>>>.
+        // We use try_lock() (non-blocking) to avoid deadlocking the async runtime.
+        // If the lock is held (very unlikely at prompt time), we conservatively
+        // assume no LSP is active rather than blocking.
+        let mcp_names: Vec<String> = ctx
+            .mcp_clients
+            .iter()
+            .map(|(name, _)| name.clone())  // extract just the display name
+            .collect();
+
+        // Check if the LSP client is currently running.
+        // try_lock() returns Ok(guard) immediately or Err if already locked.
+        let lsp_active = ctx
+            .tool_ctx
+            .lsp_client
+            .try_lock()  // non-blocking attempt
+            .map(|guard| guard.is_some())  // Some(LspClient) means it is running
+            .unwrap_or(false);  // if locked, assume not active (safe fallback)
+
+        // LSP server name from config (e.g. "rust-analyzer", or empty if not set).
+        let lsp_server_name = ctx
+            .config
+            .lsp
+            .server_command
+            .as_deref()  // Option<String> → Option<&str>
+            .unwrap_or("");  // use empty string when not configured
+
+        // Print the bar.  If there's nothing to show yet, this is a no-op.
+        print_status_bar(&session_tracker, &mcp_names, lsp_active, lsp_server_name);
 
         // Drain a pending command from the menu, or read a new line from the user.
         let line = if let Some(p) = pending_line.take() {

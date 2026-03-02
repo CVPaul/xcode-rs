@@ -209,22 +209,23 @@ pub fn readline_with_suggestions(
                     // trailing space so the user can type the argument.
                     let no_args = !matches!(chosen, "/model" | "/undo");
                     if no_args {
+                        // Erase the suggestion lines BEFORE moving to the next line.
+                        erase_suggestions(&mut stdout, suggestions.len())?;
                         suggestions.clear();
-                        erase_suggestions(&mut stdout, 0)?;
-                        // Move to a new line before returning.
                         stdout.execute(Print("\r\n"))?;
                         history.reset_nav();
                         let line: String = buf.iter().collect();
                         let line = line.trim().to_string();
                         break ReadResult::Line(line);
                     } else {
-                        // Keep suggestions visible so user sees the description,
-                        // but clear the selection — they can now type the arg.
+                        // Arg-taking command: erase suggestions, let user type the arg.
+                        erase_suggestions(&mut stdout, suggestions.len())?;
                         suggestions.clear();
-                        erase_suggestions(&mut stdout, 0)?;
+                        redraw_line(&mut stdout, prompt, &buf, cursor_pos, &[], 0)?;
                         continue;
                     }
-                }
+                } // end if !suggestions.is_empty()
+
 
                 // No active suggestion — normal Enter.
                 erase_suggestions(&mut stdout, suggestions.len())?;
@@ -252,11 +253,13 @@ pub fn readline_with_suggestions(
 
             // ── Ctrl-C: interrupted ───────────────────────────────────────────
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                // Erase any visible suggestions before clearing and breaking.
                 erase_suggestions(&mut stdout, suggestions.len())?;
+                suggestions.clear();
                 stdout.execute(Print("\r\n"))?;
                 history.reset_nav();
                 buf.clear();
-                // cursor_pos already 0 from initialisation; nothing to update.
+                // buf and cursor_pos are about to go out of scope (break).
                 break ReadResult::Interrupted;
             }
 

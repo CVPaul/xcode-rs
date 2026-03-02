@@ -1,6 +1,6 @@
 [package]
 name = "xcodeai"
-version = "2.0.1"
+version = "2.0.2"
 edition = "2021"
 description = "Autonomous AI coding agent — zero human intervention, sbox sandboxed, OpenAI-compatible"
 license = "MIT"
