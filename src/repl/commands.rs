@@ -55,7 +55,7 @@ pub const COMMANDS: &[CommandDef] = &[
     },
     CommandDef {
         cmd: "/model",
-        desc: "Show or change current model (/model gpt-4o)",
+        desc: "Switch model (interactive picker, or /model <name>)",
     },
     CommandDef {
         cmd: "/clear",
@@ -381,10 +381,74 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
         cmd if cmd.starts_with("/model") => {
             let rest = cmd[6..].trim();
             if rest.is_empty() {
-                info(&format!(
-                    "Current model: {}",
-                    style(&state.ctx.config.model).green()
-                ));
+                // Interactive model picker based on current provider
+                let api_base = &state.ctx.config.provider.api_base;
+                let models = model_presets_for_provider(api_base);
+                let current = &state.ctx.config.model;
+
+                use dialoguer::{theme::ColorfulTheme, Select};
+                use std::io::{self as stdio, BufRead, Write};
+
+                // Build labels: mark the currently active model
+                let labels: Vec<String> = models
+                    .iter()
+                    .map(|m| {
+                        if *m == current.as_str() {
+                            format!("{} (current)", m)
+                        } else {
+                            m.to_string()
+                        }
+                    })
+                    .chain(std::iter::once("Custom…".to_string()))
+                    .collect();
+
+                // Default to current model if it's in the list, otherwise 0
+                let default_idx = models
+                    .iter()
+                    .position(|m| *m == current.as_str())
+                    .unwrap_or(0);
+
+                println!();
+                info(&format!("Current model: {}", style(current).green()));
+                println!();
+                let selection = Select::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Select model")
+                    .items(&labels)
+                    .default(default_idx)
+                    .interact_opt();
+                println!();
+
+                match selection {
+                    Ok(Some(i)) if i < models.len() => {
+                        let new_model = models[i].to_string();
+                        if new_model != *current {
+                            state.ctx.switch_model(new_model.clone());
+                            ok(&format!(
+                                "Model set to {} (applies immediately).",
+                                style(&new_model).green()
+                            ));
+                        } else {
+                            info(&format!("Already using {}.", style(current).green()));
+                        }
+                    }
+                    Ok(Some(_)) => {
+                        // "Custom…" option — prompt for free-form model name
+                        print!("   Enter model name: ");
+                        stdio::stdout().flush().ok();
+                        let mut input = String::new();
+                        if stdio::stdin().lock().read_line(&mut input).is_ok() {
+                            let name = input.trim();
+                            if !name.is_empty() {
+                                state.ctx.switch_model(name.to_string());
+                                ok(&format!(
+                                    "Model set to {} (applies immediately).",
+                                    style(name).green()
+                                ));
+                            }
+                        }
+                    }
+                    _ => { /* Esc / Ctrl-C — do nothing */ }
+                }
             } else {
                 let new_model = rest.to_string();
                 state.ctx.switch_model(new_model.clone());
@@ -589,5 +653,57 @@ async fn pop_n_undo(state: &mut ReplState<'_>, count: usize) {
     }
     if popped > 0 {
         println!();
+    }
+}
+
+/// Return a list of common model names for the given provider api_base.
+/// Used by the `/model` interactive picker.
+fn model_presets_for_provider(api_base: &str) -> Vec<&'static str> {
+    use crate::llm::openai::COPILOT_API_BASE;
+
+    if api_base == COPILOT_API_BASE {
+        // GitHub Copilot — models available through Copilot API
+        vec![
+            "gpt-4o",
+            "gpt-4o-mini",
+            "o3-mini",
+            "claude-3.5-sonnet",
+            "claude-3.7-sonnet",
+            "claude-sonnet-4",
+            "gemini-2.0-flash",
+            "gemini-2.5-pro",
+        ]
+    } else if api_base == "anthropic" || api_base.starts_with("https://api.anthropic.com") {
+        vec![
+            "claude-sonnet-4-20250514",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-haiku-20241022",
+            "claude-opus-4-20250514",
+        ]
+    } else if api_base == "gemini" || api_base.starts_with("https://generativelanguage.googleapis.com") {
+        vec![
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+        ]
+    } else if api_base.contains("deepseek") {
+        vec!["deepseek-chat", "deepseek-coder", "deepseek-reasoner"]
+    } else if api_base.contains("dashscope.aliyuncs.com") {
+        vec!["qwen-max", "qwen-plus", "qwen-turbo"]
+    } else if api_base.contains("bigmodel.cn") {
+        vec!["glm-4-plus", "glm-4", "glm-4-flash"]
+    } else if api_base.contains("localhost") || api_base.contains("127.0.0.1") {
+        // Ollama / local — common open models
+        vec!["llama3", "codellama", "mistral", "deepseek-coder-v2"]
+    } else if api_base.contains("openai.com") {
+        vec![
+            "gpt-4o",
+            "gpt-4o-mini",
+            "o3-mini",
+            "gpt-4-turbo",
+        ]
+    } else {
+        // Unknown provider — show a generic list
+        vec!["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet-20241022", "deepseek-chat"]
     }
 }
