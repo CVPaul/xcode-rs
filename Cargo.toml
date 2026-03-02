@@ -6,7 +6,7 @@ description = "Autonomous AI coding agent — zero human intervention, sbox sand
 license = "MIT"
 keywords = ["ai", "agent", "coding", "autonomous", "llm"]
 categories = ["command-line-utilities", "development-tools"]
-repository = "https://github.com/xqli/xcode"
+repository = "https://github.com/CVPaul/xcode-rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
