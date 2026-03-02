@@ -22,6 +22,9 @@ use crate::tools::lsp_goto_def::LspGotoDefTool;
 use crate::tools::lsp_references::LspReferencesTool;
 use crate::tools::question::QuestionTool;
 use crate::tools::spawn_task::SpawnTaskTool;
+use crate::tools::patch::PatchTool;
+use crate::tools::fetch::FetchTool;
+use crate::tools::ls::ListDirectoryTool;
 use crate::tools::{ToolContext, ToolRegistry};
 use anyhow::Result;
 use console::style;
@@ -107,6 +110,9 @@ impl AgentContext {
         registry.register(Box::new(LspGotoDefTool));
         registry.register(Box::new(LspReferencesTool));
         // SpawnTaskTool is stateless: it gets the LLM and tool registry from
+        registry.register(Box::new(ListDirectoryTool));
+        registry.register(Box::new(FetchTool));
+        registry.register(Box::new(PatchTool));
         // ctx.llm and ctx.tools at execute time, so no constructor args needed.
         registry.register(Box::new(SpawnTaskTool));
         // 5b. MCP servers — start each server described in config.mcp_servers and

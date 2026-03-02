@@ -1,6 +1,6 @@
 [package]
 name = "xcodeai"
-version = "2.0.6"
+version = "2.0.7"
 edition = "2021"
 description = "Autonomous AI coding agent — zero human intervention, sbox sandboxed, OpenAI-compatible"
 license = "MIT"
@@ -22,6 +22,7 @@ thiserror = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 globset = "0.4"
 regex = "1"
+htmd = "0.2.2"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
@@ -41,7 +42,9 @@ tower-http = { version = "0.5", features = ["cors"] }
 termimad = "0.34"
 unicode-width = "0.2"
 
+ignore = "0.4"
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
 tower = { version = "0.4", features = ["util"] }
+futures-executor = "0.3"

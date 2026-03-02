@@ -13,6 +13,7 @@ pub mod bash;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
+pub mod fetch;
 pub mod git_blame;
 pub mod git_commit;
 pub mod git_diff;
@@ -22,9 +23,11 @@ pub mod grep_search;
 pub mod lsp_diagnostics;
 pub mod lsp_goto_def;
 pub mod lsp_references;
+pub mod ls;
 pub mod mcp_resource;
 pub mod question;
 pub mod spawn_task;
+pub mod patch;
 
 #[async_trait]
 pub trait Tool: Send + Sync {

@@ -61,6 +61,10 @@ struct Cli {
     /// Disable markdown rendering of agent output (show raw text instead of styled)
     #[arg(long, global = false)]
     no_markdown: bool,
+    /// Run a single task non-interactively, then exit. Short for `xcodeai run "prompt"`.
+    /// Example: `xcodeai -p "Add error handling to lib.rs"`
+    #[arg(long, short = 'P', global = false)]
+    prompt: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -138,6 +142,21 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        None if cli.prompt.is_some() => {
+            // `-P "prompt"` shorthand: run the task non-interactively (same as `run`).
+            run_command(
+                cli.prompt.unwrap(),
+                cli.project,
+                cli.no_sandbox,
+                cli.model,
+                cli.provider_url,
+                cli.api_key,
+                cli.no_agents_md,
+                cli.compact,
+                cli.no_markdown,
+            )
+            .await?;
+        }
         None => {
             repl::repl_command(
                 cli.project,
@@ -184,7 +203,6 @@ async fn main() -> Result<()> {
             serve_command(host, port).await?;
         }
     }
-
     Ok(())
 }
 
@@ -418,4 +436,22 @@ mod tests {
         assert!(cli.command.is_none());
         assert_eq!(cli.provider_url.as_deref(), Some("copilot"));
     }
+
+    #[test]
+    fn test_cli_prompt_flag() {
+        // `-P "task"` should set the prompt field, no subcommand
+        let cli = Cli::try_parse_from(["xcodeai", "-P", "Add tests"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.prompt.as_deref(), Some("Add tests"));
+    }
+
+    #[test]
+    fn test_cli_prompt_long_flag() {
+        let cli =
+            Cli::try_parse_from(["xcodeai", "--prompt", "Fix the bug", "--no-sandbox"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.prompt.as_deref(), Some("Fix the bug"));
+        assert!(cli.no_sandbox);
+    }
+
 }

@@ -61,6 +61,12 @@ pub struct InputHistory {
     stash: String,
 }
 
+impl Default for InputHistory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InputHistory {
     pub fn new() -> Self {
         Self {
