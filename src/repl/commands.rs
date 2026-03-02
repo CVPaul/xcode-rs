@@ -381,58 +381,90 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
         cmd if cmd.starts_with("/model") => {
             let rest = cmd[6..].trim();
             if rest.is_empty() {
-                // Interactive model picker based on current provider
-                let api_base = &state.ctx.config.provider.api_base;
-                let models = model_presets_for_provider(api_base);
-                let current = &state.ctx.config.model;
+                // Interactive model picker — fetch models dynamically from the provider API.
+                let api_base = state.ctx.config.provider.api_base.clone();
+                let api_key = state.ctx.config.provider.api_key.clone();
+                let current = state.ctx.config.model.clone();
 
                 use dialoguer::{theme::ColorfulTheme, Select};
                 use std::io::{self as stdio, BufRead, Write};
 
-                // Build labels: mark the currently active model
-                let labels: Vec<String> = models
-                    .iter()
-                    .map(|m| {
-                        if *m == current.as_str() {
-                            format!("{} (current)", m)
-                        } else {
-                            m.to_string()
-                        }
-                    })
-                    .chain(std::iter::once("Custom…".to_string()))
-                    .collect();
-
-                // Default to current model if it's in the list, otherwise 0
-                let default_idx = models
-                    .iter()
-                    .position(|m| *m == current.as_str())
-                    .unwrap_or(0);
-
                 println!();
-                info(&format!("Current model: {}", style(current).green()));
-                println!();
-                let selection = Select::with_theme(&ColorfulTheme::default())
-                    .with_prompt("Select model")
-                    .items(&labels)
-                    .default(default_idx)
-                    .interact_opt();
-                println!();
+                info(&format!("Current model: {}", style(&current).green()));
 
-                match selection {
-                    Ok(Some(i)) if i < models.len() => {
-                        let new_model = models[i].to_string();
-                        if new_model != *current {
-                            state.ctx.switch_model(new_model.clone());
-                            ok(&format!(
-                                "Model set to {} (applies immediately).",
-                                style(&new_model).green()
-                            ));
-                        } else {
-                            info(&format!("Already using {}.", style(current).green()));
+                // Try to fetch models from the provider API.
+                info("Fetching available models from provider...");
+                let models_result = fetch_models(&api_base, &api_key).await;
+
+                match models_result {
+                    Ok(models) if !models.is_empty() => {
+                        println!();
+                        // Build labels: mark the currently active model
+                        let labels: Vec<String> = models
+                            .iter()
+                            .map(|m| {
+                                if *m == current.as_str() {
+                                    format!("{} (current)", m)
+                                } else {
+                                    m.to_string()
+                                }
+                            })
+                            .chain(std::iter::once("Custom\u{2026}".to_string()))
+                            .collect();
+
+                        // Default to current model if it's in the list, otherwise 0
+                        let default_idx = models
+                            .iter()
+                            .position(|m| *m == current.as_str())
+                            .unwrap_or(0);
+
+                        let selection = Select::with_theme(&ColorfulTheme::default())
+                            .with_prompt("Select model")
+                            .items(&labels)
+                            .default(default_idx)
+                            .interact_opt();
+                        println!();
+
+                        match selection {
+                            Ok(Some(i)) if i < models.len() => {
+                                let new_model = models[i].clone();
+                                if new_model != current {
+                                    state.ctx.switch_model(new_model.clone());
+                                    ok(&format!(
+                                        "Model set to {} (applies immediately).",
+                                        style(&new_model).green()
+                                    ));
+                                } else {
+                                    info(&format!("Already using {}.", style(&current).green()));
+                                }
+                            }
+                            Ok(Some(_)) => {
+                                // "Custom\u{2026}" option \u{2014} prompt for free-form model name
+                                print!("   Enter model name: ");
+                                stdio::stdout().flush().ok();
+                                let mut input = String::new();
+                                if stdio::stdin().lock().read_line(&mut input).is_ok() {
+                                    let name = input.trim();
+                                    if !name.is_empty() {
+                                        state.ctx.switch_model(name.to_string());
+                                        ok(&format!(
+                                            "Model set to {} (applies immediately).",
+                                            style(name).green()
+                                        ));
+                                    }
+                                }
+                            }
+                            _ => { /* Esc / Ctrl-C \u{2014} do nothing */ }
                         }
                     }
-                    Ok(Some(_)) => {
-                        // "Custom…" option — prompt for free-form model name
+                    Ok(_) | Err(_) => {
+                        // API call failed or returned no models \u{2014} fall back to manual input.
+                        if let Err(ref e) = models_result {
+                            warn(&format!("Could not fetch models: {:#}", e));
+                        } else {
+                            warn("Provider returned no models.");
+                        }
+                        println!();
                         print!("   Enter model name: ");
                         stdio::stdout().flush().ok();
                         let mut input = String::new();
@@ -447,7 +479,6 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
                             }
                         }
                     }
-                    _ => { /* Esc / Ctrl-C — do nothing */ }
                 }
             } else {
                 let new_model = rest.to_string();
@@ -656,54 +687,128 @@ async fn pop_n_undo(state: &mut ReplState<'_>, count: usize) {
     }
 }
 
-/// Return a list of common model names for the given provider api_base.
-/// Used by the `/model` interactive picker.
-fn model_presets_for_provider(api_base: &str) -> Vec<&'static str> {
+/// Fetch available model names from the provider's list-models API.
+///
+/// Each provider has a different endpoint / auth scheme:
+///  - OpenAI / OpenAI-compat: `GET {api_base}/models`
+///  - Anthropic:              `GET https://api.anthropic.com/v1/models`
+///  - Gemini:                 `GET https://generativelanguage.googleapis.com/v1beta/models?key=…`
+///  - GitHub Copilot:         `GET https://api.githubcopilot.com/models`  (Copilot bearer token)
+///
+/// Returns a sorted list of model IDs on success, or an error if the HTTP
+/// call fails.  The caller should fall back to manual input on error.
+async fn fetch_models(api_base: &str, api_key: &str) -> Result<Vec<String>> {
+    use crate::llm::anthropic::ANTHROPIC_API_BASE;
+    use crate::llm::gemini::GEMINI_API_BASE;
     use crate::llm::openai::COPILOT_API_BASE;
+    use serde::Deserialize;
 
-    if api_base == COPILOT_API_BASE {
-        // GitHub Copilot — models available through Copilot API
-        vec![
-            "gpt-4o",
-            "gpt-4o-mini",
-            "o3-mini",
-            "claude-3.5-sonnet",
-            "claude-3.7-sonnet",
-            "claude-sonnet-4",
-            "gemini-2.0-flash",
-            "gemini-2.5-pro",
-        ]
-    } else if api_base == "anthropic" || api_base.starts_with("https://api.anthropic.com") {
-        vec![
-            "claude-sonnet-4-20250514",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
-            "claude-opus-4-20250514",
-        ]
-    } else if api_base == "gemini" || api_base.starts_with("https://generativelanguage.googleapis.com") {
-        vec![
-            "gemini-2.5-pro",
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-        ]
-    } else if api_base.contains("deepseek") {
-        vec!["deepseek-chat", "deepseek-coder", "deepseek-reasoner"]
-    } else if api_base.contains("dashscope.aliyuncs.com") {
-        vec!["qwen-max", "qwen-plus", "qwen-turbo"]
-    } else if api_base.contains("bigmodel.cn") {
-        vec!["glm-4-plus", "glm-4", "glm-4-flash"]
-    } else if api_base.contains("localhost") || api_base.contains("127.0.0.1") {
-        // Ollama / local — common open models
-        vec!["llama3", "codellama", "mistral", "deepseek-coder-v2"]
-    } else if api_base.contains("openai.com") {
-        vec![
-            "gpt-4o",
-            "gpt-4o-mini",
-            "o3-mini",
-            "gpt-4-turbo",
-        ]
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+
+    // ── Helper structs for JSON deserialization ──────────────────────────────
+
+    #[derive(Deserialize)]
+    struct OpenAiModelsResponse {
+        data: Vec<OpenAiModelEntry>,
+    }
+    #[derive(Deserialize)]
+    struct OpenAiModelEntry {
+        id: String,
+    }
+
+    #[derive(Deserialize)]
+    struct AnthropicModelsResponse {
+        data: Vec<AnthropicModelEntry>,
+    }
+    #[derive(Deserialize)]
+    struct AnthropicModelEntry {
+        id: String,
+    }
+
+    #[derive(Deserialize)]
+    struct GeminiModelsResponse {
+        models: Vec<GeminiModelEntry>,
+    }
+    #[derive(Deserialize)]
+    struct GeminiModelEntry {
+        name: String,
+    }
+
+    #[derive(Deserialize)]
+    struct CopilotModelEntry {
+        id: String,
+    }
+
+    // ── Determine provider type and call the right endpoint ─────────────────
+
+    let is_anthropic = api_base == ANTHROPIC_API_BASE
+        || api_base.starts_with("https://api.anthropic.com");
+    let is_gemini = api_base == GEMINI_API_BASE
+        || api_base.starts_with("https://generativelanguage.googleapis.com");
+    let is_copilot = api_base == COPILOT_API_BASE;
+
+    if is_copilot {
+        // ── GitHub Copilot ─────────────────────────────────────────────────
+        // Load the persisted OAuth token, exchange it for a short-lived API
+        // bearer token, then query the Copilot models endpoint.
+        let oauth = crate::auth::CopilotOAuthToken::load()?
+            .ok_or_else(|| anyhow::anyhow!("No Copilot credentials — run /login first"))?;
+        let api_token = crate::auth::refresh_copilot_token(&client, &oauth.access_token).await?;
+        let resp = client
+            .get("https://api.githubcopilot.com/models")
+            .header("Authorization", format!("Bearer {}", api_token.token))
+            .send()
+            .await?
+            .error_for_status()?;
+        let entries: Vec<CopilotModelEntry> = resp.json().await?;
+        let mut models: Vec<String> = entries.into_iter().map(|e| e.id).collect();
+        models.sort();
+        Ok(models)
+    } else if is_anthropic {
+        // ── Anthropic ─────────────────────────────────────────────────────
+        let resp = client
+            .get("https://api.anthropic.com/v1/models?limit=100")
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .send()
+            .await?
+            .error_for_status()?;
+        let body: AnthropicModelsResponse = resp.json().await?;
+        let mut models: Vec<String> = body.data.into_iter().map(|e| e.id).collect();
+        models.sort();
+        Ok(models)
+    } else if is_gemini {
+        // ── Google Gemini ──────────────────────────────────────────────────
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models?key={}&pageSize=100",
+            api_key
+        );
+        let resp = client.get(&url).send().await?.error_for_status()?;
+        let body: GeminiModelsResponse = resp.json().await?;
+        // Gemini returns names like "models/gemini-2.5-pro"; strip the prefix.
+        let mut models: Vec<String> = body
+            .models
+            .into_iter()
+            .map(|e| e.name.strip_prefix("models/").unwrap_or(&e.name).to_string())
+            .collect();
+        models.sort();
+        Ok(models)
     } else {
-        // Unknown provider — show a generic list
-        vec!["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet-20241022", "deepseek-chat"]
+        // ── OpenAI / OpenAI-compatible ────────────────────────────────────
+        // api_base is the full URL like "https://api.openai.com/v1".
+        // Append "/models" to it.
+        let url = format!("{}/models", api_base.trim_end_matches('/'));
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send()
+            .await?
+            .error_for_status()?;
+        let body: OpenAiModelsResponse = resp.json().await?;
+        let mut models: Vec<String> = body.data.into_iter().map(|e| e.id).collect();
+        models.sort();
+        Ok(models)
     }
 }
