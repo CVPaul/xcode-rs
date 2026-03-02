@@ -33,6 +33,7 @@ use crossterm::{
 use std::io::{self, Write};
 
 use super::commands::COMMANDS;
+use unicode_width::UnicodeWidthChar;
 
 // ── Public result type ────────────────────────────────────────────────────────
 
@@ -180,6 +181,7 @@ pub fn readline_with_suggestions(
     let mut cursor_pos: usize = 0; // insertion point (0 = before first char)
     let mut suggestions: Vec<&'static str> = Vec::new(); // current /command matches
     let mut selected: usize = 0; // which suggestion is highlighted
+    let mut prev_sug_count: usize = 0; // how many suggestion lines were rendered last time
 
     let result = loop {
         // ── Wait for a keypress ───────────────────────────────────────────────
@@ -202,15 +204,15 @@ pub fn readline_with_suggestions(
                     // Replace buffer with completed command + trailing space.
                     buf = format!("{} ", chosen).chars().collect();
                     cursor_pos = buf.len();
-                    redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                    prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
 
                     // If the command takes no arguments, submit immediately.
                     // Commands that take args (e.g. /model, /undo N) get a
                     // trailing space so the user can type the argument.
-                    let no_args = !matches!(chosen, "/model" | "/undo");
+                    let no_args = !matches!(chosen, "/undo");
                     if no_args {
                         // Erase the suggestion lines BEFORE moving to the next line.
-                        erase_suggestions(&mut stdout, suggestions.len())?;
+                        erase_suggestions(&mut stdout, prev_sug_count)?;
                         suggestions.clear();
                         stdout.execute(Print("\r\n"))?;
                         history.reset_nav();
@@ -219,16 +221,16 @@ pub fn readline_with_suggestions(
                         break ReadResult::Line(line);
                     } else {
                         // Arg-taking command: erase suggestions, let user type the arg.
-                        erase_suggestions(&mut stdout, suggestions.len())?;
+                        erase_suggestions(&mut stdout, prev_sug_count)?;
                         suggestions.clear();
-                        redraw_line(&mut stdout, prompt, &buf, cursor_pos, &[], 0)?;
+                        prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &[], 0, 0)?;
                         continue;
                     }
                 } // end if !suggestions.is_empty()
 
 
                 // No active suggestion — normal Enter.
-                erase_suggestions(&mut stdout, suggestions.len())?;
+                erase_suggestions(&mut stdout, prev_sug_count)?;
                 stdout.execute(Print("\r\n"))?;
                 history.reset_nav();
                 let line: String = buf.iter().collect();
@@ -239,7 +241,7 @@ pub fn readline_with_suggestions(
             // ── Ctrl-D: EOF (only on empty buffer) ───────────────────────────
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
                 if buf.is_empty() {
-                    erase_suggestions(&mut stdout, suggestions.len())?;
+                    erase_suggestions(&mut stdout, prev_sug_count)?;
                     stdout.execute(Print("\r\n"))?;
                     break ReadResult::Eof;
                 }
@@ -247,14 +249,14 @@ pub fn readline_with_suggestions(
                 if cursor_pos < buf.len() {
                     buf.remove(cursor_pos);
                     update_suggestions(&buf, &mut suggestions, &mut selected);
-                    redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                    prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                 }
             }
 
             // ── Ctrl-C: interrupted ───────────────────────────────────────────
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                 // Erase any visible suggestions before clearing and breaking.
-                erase_suggestions(&mut stdout, suggestions.len())?;
+                erase_suggestions(&mut stdout, prev_sug_count)?;
                 suggestions.clear();
                 stdout.execute(Print("\r\n"))?;
                 history.reset_nav();
@@ -268,7 +270,7 @@ pub fn readline_with_suggestions(
                 buf.clear();
                 cursor_pos = 0;
                 update_suggestions(&buf, &mut suggestions, &mut selected);
-                redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
             }
 
             // ── Ctrl-W: delete word before cursor ─────────────────────────────
@@ -283,26 +285,26 @@ pub fn readline_with_suggestions(
                     buf.remove(cursor_pos);
                 }
                 update_suggestions(&buf, &mut suggestions, &mut selected);
-                redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
             }
 
             // ── Ctrl-A / Home: go to start of line ───────────────────────────
             (KeyCode::Char('a'), KeyModifiers::CONTROL) | (KeyCode::Home, _) => {
                 cursor_pos = 0;
-                redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
             }
 
             // ── Ctrl-E / End: go to end of line ──────────────────────────────
             (KeyCode::Char('e'), KeyModifiers::CONTROL) | (KeyCode::End, _) => {
                 cursor_pos = buf.len();
-                redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
             }
 
             // ── Left arrow: move cursor left ──────────────────────────────────
             (KeyCode::Left, _) => {
                 if cursor_pos > 0 {
                     cursor_pos -= 1;
-                    redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                    prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                 }
             }
 
@@ -310,7 +312,7 @@ pub fn readline_with_suggestions(
             (KeyCode::Right, _) => {
                 if cursor_pos < buf.len() {
                     cursor_pos += 1;
-                    redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                    prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                 }
             }
 
@@ -323,7 +325,7 @@ pub fn readline_with_suggestions(
                     } else {
                         selected - 1
                     };
-                    redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                    prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                 } else {
                     // History navigation.
                     let current: String = buf.iter().collect();
@@ -331,7 +333,7 @@ pub fn readline_with_suggestions(
                         buf = entry.chars().collect();
                         cursor_pos = buf.len();
                         update_suggestions(&buf, &mut suggestions, &mut selected);
-                        redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                    prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                     }
                 }
             }
@@ -345,14 +347,14 @@ pub fn readline_with_suggestions(
                     } else {
                         selected + 1
                     };
-                    redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                    prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                 } else {
                     // History navigation.
                     if let Some(entry) = history.down() {
                         buf = entry.chars().collect();
                         cursor_pos = buf.len();
                         update_suggestions(&buf, &mut suggestions, &mut selected);
-                        redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                    prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                     }
                 }
             }
@@ -364,8 +366,8 @@ pub fn readline_with_suggestions(
                     buf = format!("{} ", chosen).chars().collect();
                     cursor_pos = buf.len();
                     suggestions.clear();
-                    erase_suggestions(&mut stdout, 0)?;
-                    redraw_line(&mut stdout, prompt, &buf, cursor_pos, &[], 0)?;
+                    erase_suggestions(&mut stdout, prev_sug_count)?;
+                    prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &[], 0, 0)?;
                 }
             }
 
@@ -373,13 +375,13 @@ pub fn readline_with_suggestions(
             (KeyCode::Esc, _) => {
                 if !suggestions.is_empty() {
                     suggestions.clear();
-                    erase_suggestions(&mut stdout, 0)?;
-                    redraw_line(&mut stdout, prompt, &buf, cursor_pos, &[], 0)?;
+                    erase_suggestions(&mut stdout, prev_sug_count)?;
+                    prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &[], 0, 0)?;
                 } else {
                     // Clear buffer.
                     buf.clear();
                     cursor_pos = 0;
-                    redraw_line(&mut stdout, prompt, &buf, cursor_pos, &[], 0)?;
+                    prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &[], 0, 0)?;
                 }
             }
 
@@ -389,7 +391,7 @@ pub fn readline_with_suggestions(
                     cursor_pos -= 1;
                     buf.remove(cursor_pos);
                     update_suggestions(&buf, &mut suggestions, &mut selected);
-                    redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                    prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                 }
             }
 
@@ -398,7 +400,7 @@ pub fn readline_with_suggestions(
                 if cursor_pos < buf.len() {
                     buf.remove(cursor_pos);
                     update_suggestions(&buf, &mut suggestions, &mut selected);
-                    redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                    prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                 }
             }
 
@@ -409,7 +411,7 @@ pub fn readline_with_suggestions(
                 buf.insert(cursor_pos, ch);
                 cursor_pos += 1;
                 update_suggestions(&buf, &mut suggestions, &mut selected);
-                redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected)?;
+                prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
             }
 
             // Ignore everything else (F-keys, Ctrl+other, Alt+…, etc.)
@@ -487,7 +489,8 @@ fn redraw_line(
     cursor_pos: usize,
     suggestions: &[&str],
     selected: usize,
-) -> io::Result<()> {
+    prev_sug_count: usize,
+) -> io::Result<usize> {
     let line: String = buf.iter().collect();
 
     // ── 1. Redraw input line ──────────────────────────────────────────────────
@@ -499,6 +502,9 @@ fn redraw_line(
         // pass through verbatim).
         .queue(Print(prompt))?
         .queue(Print(&line))?;
+
+    // ── 1b. Erase any previously-rendered suggestion lines ─────────────────
+    erase_suggestions(stdout, prev_sug_count)?;
 
     // ── 2. Print suggestion lines ─────────────────────────────────────────────
     // We need to know how many *previous* suggestion lines we rendered so we
@@ -548,9 +554,10 @@ fn redraw_line(
     // Use `console::measure_text_width` for this.
     let prompt_visible_width = console::measure_text_width(prompt);
     // Cursor column = prompt width + cursor position in the buffer.
-    let col = (prompt_visible_width + cursor_pos) as u16;
+    let buf_display_width: usize = buf[..cursor_pos].iter().map(|c| c.width().unwrap_or(0)).sum();
+    let col = (prompt_visible_width + buf_display_width) as u16;
     stdout.queue(cursor::MoveToColumn(col))?;
 
     stdout.flush()?;
-    Ok(())
+    Ok(suggestions.len())
 }
