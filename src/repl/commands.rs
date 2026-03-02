@@ -759,6 +759,10 @@ async fn fetch_models(api_base: &str, api_key: &str) -> Result<Vec<String>> {
         let resp = client
             .get("https://api.githubcopilot.com/models")
             .header("Authorization", format!("Bearer {}", api_token.token))
+            .header("Editor-Version", "vscode/1.80.1")
+            .header("Copilot-Integration-Id", "vscode-chat")
+            .header("User-Agent", "GithubCopilot/1.155.0")
+            .header("Content-Type", "application/json")
             .send()
             .await?
             .error_for_status()?;
