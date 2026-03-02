@@ -114,15 +114,15 @@ impl AgentIO for NullIO {
 
 // ─── AutoApproveIO ──────────────────────────────────────────────────────────
 //
-// Used when `--yes` / `-y` is passed on the CLI.
+// Default I/O for both REPL and `run` modes.
 // All output goes to stderr (same as TerminalIO); confirm_destructive always
 // returns true so no human approval is needed.
 
-/// I/O implementation for `--yes` mode.
+/// Default I/O implementation — fully autonomous.
 ///
 /// Inherits full terminal output (tool calls, results, status lines) from
 /// `TerminalIO`, but auto-approves every destructive action without prompting.
-/// This is the behaviour of the old `confirm_destructive = false` flag.
+/// Users can opt into confirmation prompts via `--confirm`.
 pub struct AutoApproveIO;
 
 #[async_trait]

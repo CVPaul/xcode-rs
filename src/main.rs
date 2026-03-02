@@ -48,9 +48,10 @@ struct Cli {
     /// Override API key
     #[arg(long, global = false)]
     api_key: Option<String>,
-    /// Skip confirmation prompts for destructive tool calls (bash rm, file_write overwrites, etc.)
-    #[arg(long, short = 'y', global = false)]
-    yes: bool,
+    /// Prompt for confirmation before destructive tool calls (bash rm, file_write overwrites, etc.)
+    /// By default xcodeai runs fully autonomously without prompting.
+    #[arg(long, global = false)]
+    confirm: bool,
     /// Skip loading AGENTS.md project rules
     #[arg(long, global = false)]
     no_agents_md: bool,
@@ -144,7 +145,7 @@ async fn main() -> Result<()> {
                 cli.model,
                 cli.provider_url,
                 cli.api_key,
-                cli.yes,
+                cli.confirm,
                 cli.no_agents_md,
                 cli.compact,
                 cli.no_markdown,

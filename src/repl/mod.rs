@@ -204,7 +204,7 @@ pub async fn repl_command(
     model: Option<String>,
     provider_url: Option<String>,
     api_key: Option<String>,
-    yes: bool,
+    confirm: bool,
     no_agents_md: bool,
     // When true, enables compact mode for this REPL session.
     compact: bool,
@@ -223,12 +223,12 @@ pub async fn repl_command(
     use std::sync::mpsc;
     use std::time::Duration;
 
-    let io: std::sync::Arc<dyn crate::io::AgentIO> = if yes {
-        // --yes flag: auto-approve all destructive calls, no prompts.
-        std::sync::Arc::new(crate::io::AutoApproveIO)
-    } else {
-        // Interactive mode: prompt before destructive operations.
+    let io: std::sync::Arc<dyn crate::io::AgentIO> = if confirm {
+        // --confirm flag: prompt before destructive operations.
         std::sync::Arc::new(crate::io::terminal::TerminalIO { no_markdown })
+    } else {
+        // Default: fully autonomous — auto-approve all destructive calls.
+        std::sync::Arc::new(crate::io::AutoApproveIO)
     };
     let mut ctx = AgentContext::new(
         project,

@@ -455,7 +455,7 @@ fn format_args_preview(arguments: &str) -> String {
 /// - `file_write` when the target file already exists on disk (overwrite)
 ///
 /// Conservative on false-negatives: it is better to ask one extra time than to
-/// silently delete something important.  The user can always pass --yes to skip.
+/// silently delete something important.  The user can pass --confirm to enable prompts.
 fn is_destructive_call(
     tool_name: &str,
     args: &serde_json::Value,
