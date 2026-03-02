@@ -115,8 +115,9 @@ pub fn session_picker(store: &SessionStore) -> SessionPickResult {
     for s in &sessions {
         let date = s.updated_at.format("%Y-%m-%d %H:%M").to_string();
         let title = s.title.as_deref().unwrap_or("(untitled)");
-        let short_title = if title.len() > 50 {
-            format!("{}…", &title[..49])
+        let short_title = if title.chars().count() > 50 {
+            let end = title.char_indices().nth(49).map(|(i, _)| i).unwrap_or(title.len());
+            format!("{}…", &title[..end])
         } else {
             title.to_string()
         };
