@@ -7,6 +7,7 @@
 // - REPL state enums and structs
 // - Provider presets for /connect
 // - Session picker and connect menu
+// - crossterm-based readline with live slash-command suggestions (input.rs)
 //
 // For Rust learners: This file demonstrates how to organize a REPL loop and related state in a separate module. It also shows how to use enums and structs to manage interactive CLI state.
 
@@ -16,12 +17,14 @@ use crate::session::{Session, SessionStore};
 use crate::ui::{err, info, ok, print_banner, print_separator, warn};
 use anyhow::Result;
 use console::style;
-use rustyline::DefaultEditor;
+// rustyline is no longer used — all input goes through src/repl/input.rs.
 use std::path::PathBuf;
 
 pub mod commands;
+pub mod input;
 use commands::{handle_command, ReplState};
 
+// SlashHelper and rustyline editor removed — superseded by crossterm readline.
 #[derive(Clone, Copy, PartialEq)]
 pub enum ReplMode {
     Act,
@@ -134,8 +137,10 @@ pub fn session_picker(store: &SessionStore) -> SessionPickResult {
 }
 
 /// Interactive /connect menu — lets user pick a provider from a numbered list.
-pub fn connect_menu(rl: &mut DefaultEditor) -> Option<(String, String)> {
+/// Prompts for URL and API key using plain stdin (no rustyline needed).
+pub fn connect_menu() -> Option<(String, String)> {
     use dialoguer::{theme::ColorfulTheme, Select};
+    use std::io::{self, BufRead, Write};
     println!();
     info("Select a provider:");
     println!();
@@ -153,17 +158,20 @@ pub fn connect_menu(rl: &mut DefaultEditor) -> Option<(String, String)> {
     };
     let preset = &PROVIDER_PRESETS[idx];
     println!();
+    // Helper: read a line from stdin with a visible prompt.
+    let read_line = |prompt_str: &str| -> Option<String> {
+        print!("{} ", console::style(prompt_str).cyan());
+        io::stdout().flush().ok()?;
+        let stdin = io::stdin();
+        let mut line = String::new();
+        stdin.lock().read_line(&mut line).ok()?;
+        Some(line.trim().to_string())
+    };
     let api_base = if preset.api_base.is_empty() {
-        match rl.readline(&format!("{} ", style("  API base URL:").cyan())) {
-            Ok(line) => {
-                let url = line.trim().to_string();
-                if url.is_empty() {
-                    info("Cancelled.");
-                    return None;
-                }
-                url
-            }
-            Err(_) => return None,
+        match read_line("  API base URL:") {
+            Some(url) if !url.is_empty() => url,
+            Some(_) => { info("Cancelled."); return None; }
+            None => return None,
         }
     } else {
         preset.api_base.to_string()
@@ -172,15 +180,14 @@ pub fn connect_menu(rl: &mut DefaultEditor) -> Option<(String, String)> {
         return Some(("copilot_do_login".to_string(), String::new()));
     }
     let api_key = if preset.needs_key {
-        match rl.readline(&format!("{} ", style("  API key:").cyan())) {
-            Ok(line) => {
-                let k = line.trim().to_string();
+        match read_line("  API key:") {
+            Some(k) => {
                 if k.is_empty() {
                     warn("No key entered — provider set, but API calls will fail without a key.");
                 }
                 k
             }
-            Err(_) => return None,
+            None => return None,
         }
     } else {
         String::new()
@@ -211,7 +218,7 @@ pub async fn repl_command(
     use crate::context::update_session_title;
     use crate::llm;
     use crate::session::auto_title;
-    use rustyline::error::ReadlineError;
+    use crate::repl::input::{InputHistory, ReadResult};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -261,17 +268,15 @@ pub async fn repl_command(
         &auth_status,
     );
 
-    // Readline editor with persistent history
-    let mut rl = DefaultEditor::new()?;
+    // ── Crossterm-based line editor with live slash-command suggestions ────
+    // `InputHistory` owns the in-process history list.  We load it from a
+    // text file at start and save it back on clean exit.
+    let mut history = InputHistory::new();
     let history_path = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("xcode")
         .join("repl_history.txt");
-
-    if let Some(parent) = history_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = rl.load_history(&history_path);
+    history.load_from_file(&history_path);
 
     let director = Director::new(ctx.config.agent.clone());
     let mut mode = ReplMode::Act;
@@ -329,21 +334,22 @@ pub async fn repl_command(
         let line = if let Some(p) = pending_line.take() {
             p
         } else {
-            match rl.readline(&prompt) {
-                Ok(raw) => {
+            match input::readline_with_suggestions(&prompt, &mut history)
+                .map_err(anyhow::Error::from)?
+            {
+                ReadResult::Line(raw) => {
                     let trimmed = raw.trim().to_string();
                     if trimmed.is_empty() {
                         continue;
                     }
-                    let _ = rl.add_history_entry(&trimmed);
+                    history.push(&trimmed);
                     trimmed
                 }
-                Err(ReadlineError::Interrupted) => {
+                ReadResult::Interrupted => {
                     info("Ctrl-C — type /exit or press Ctrl-D to quit.");
                     continue;
                 }
-                Err(ReadlineError::Eof) => break,
-                Err(e) => return Err(e.into()),
+                ReadResult::Eof => break,
             }
         };
 
@@ -387,7 +393,7 @@ pub async fn repl_command(
             {
                 // Unknown /xxx command — show the interactive picker.
                 if let Some(chosen) = show_command_menu() {
-                    let _ = rl.add_history_entry(&chosen);
+                    history.push(&chosen);
                     pending_line = Some(chosen);
                 }
                 continue;
@@ -402,7 +408,7 @@ pub async fn repl_command(
                     mode: &mut mode,
                     sess: &mut sess,
                     ctx: &mut ctx,
-                    rl: &mut rl,
+                    history: &mut history,
                     conversation_messages: &mut conversation_messages,
                     act_messages: &mut act_messages,
                     coder_system_prompt: &coder_system_prompt,
@@ -624,7 +630,7 @@ pub async fn repl_command(
         }
     }
 
-    let _ = rl.save_history(&history_path);
+    history.save_to_file(&history_path);
     println!();
     ok(&format!("Session saved: {}", style(&sess.id).dim()));
     info(&format!("xcodeai session show {}", sess.id));

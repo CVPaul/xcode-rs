@@ -1,6 +1,6 @@
 [package]
 name = "xcodeai"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2021"
 description = "Autonomous AI coding agent — zero human intervention, sbox sandboxed, OpenAI-compatible"
 license = "MIT"
@@ -32,6 +32,7 @@ tempfile = "3"
 futures-util = "0.3"
 rand = "0.8"
 rustyline = { version = "14", features = ["derive"] }
+crossterm = "0.27"
 console = "0.15"
 dialoguer = { version = "0.11", default-features = false, features = [] }
 axum = { version = "0.7", features = ["tokio", "macros"] }

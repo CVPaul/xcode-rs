@@ -172,8 +172,19 @@ impl Agent for CoderAgent {
                 // Printing again would duplicate the output.
 
                 // Check if the LLM signaled full task completion.
+                //
+                // We stop if ANY of these are true:
+                //  (a) LLM output the [TASK_COMPLETE] marker
+                //  (b) We hit the auto-continue cap
+                //  (c) This is the very first turn (auto_continues == 0) AND no
+                //      tool calls have been made at all — meaning the LLM gave a
+                //      direct conversational answer rather than kicking off a task.
+                //      Examples: "hi" → "Hello! How can I help you?"
+                //      There is nothing to continue; stop immediately.
+                let direct_answer = auto_continues == 0 && tool_calls_total == 0;
                 if looks_like_task_complete(&text)
                     || auto_continues >= self.config.max_auto_continues
+                    || direct_answer
                 {
                     // If we hit max auto-continues, log a warning so the user
                     // knows why we stopped before seeing [TASK_COMPLETE].

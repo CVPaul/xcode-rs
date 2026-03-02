@@ -13,7 +13,7 @@ use crate::session::Session;
 use crate::ui::{err, info, ok, warn};
 use anyhow::Result;
 use console::{style, Style};
-use rustyline::DefaultEditor;
+// rustyline is no longer used — connect_menu uses std::io::stdin().
 
 pub struct CommandDef {
     pub cmd: &'static str,
@@ -106,7 +106,9 @@ pub struct ReplState<'a> {
     pub mode: &'a mut ReplMode,
     pub sess: &'a mut Session,
     pub ctx: &'a mut crate::context::AgentContext,
-    pub rl: &'a mut DefaultEditor,
+    /// The input history owned by the REPL main loop.
+    /// Passed here so /session etc can call `history.push()` if needed.
+    pub history: &'a mut crate::repl::input::InputHistory,
     pub conversation_messages: &'a mut Vec<llm::Message>,
     pub act_messages: &'a mut Vec<llm::Message>,
     pub coder_system_prompt: &'a str,
@@ -339,7 +341,7 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
             Ok(None)
         }
         "/connect" => {
-            if let Some((new_base, new_key)) = crate::repl::connect_menu(state.rl) {
+            if let Some((new_base, new_key)) = crate::repl::connect_menu() {
                 if new_base == "copilot_do_login" {
                     info("Starting GitHub Copilot device authorization…");
                     match auth::device_code_flow(&reqwest::Client::new()).await {
@@ -461,7 +463,7 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
                 && !cmd.starts_with("/undo")) =>
         {
             if let Some(chosen) = show_command_menu() {
-                let _ = state.rl.add_history_entry(&chosen);
+                state.history.push(&chosen);
                 // Buffer the chosen command so the top of the loop processes it exactly like direct user input
                 // This will be handled in the main REPL loop.
             }
