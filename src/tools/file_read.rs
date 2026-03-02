@@ -1,7 +1,7 @@
 use crate::tools::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct FileReadTool;
 
@@ -75,6 +75,25 @@ impl Tool for FileReadTool {
             .collect::<Vec<_>>()
             .join("\n");
 
+        // In compact mode, cap the output to 50 lines to save tokens.
+        // The agent can always call file_read again with offset/limit to get more.
+        let output = if ctx.compact_mode && selected.len() > 50 {
+            // Take only the first 50 lines of the selected slice.
+            let capped = selected[..50]
+                .iter()
+                .enumerate()
+                .map(|(i, line)| format!("{}: {}", offset + i + 1, line))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "{}\n[compact: showing first 50 of {} lines — use offset/limit to read more]",
+                capped,
+                selected.len()
+            )
+        } else {
+            output
+        };
+
         Ok(ToolResult {
             output,
             is_error: false,
@@ -82,7 +101,7 @@ impl Tool for FileReadTool {
     }
 }
 
-fn resolve_path(path_str: &str, working_dir: &PathBuf) -> PathBuf {
+fn resolve_path(path_str: &str, working_dir: &Path) -> PathBuf {
     let p = PathBuf::from(path_str);
     if p.is_absolute() {
         p
@@ -101,7 +120,13 @@ mod tests {
         ToolContext {
             working_dir: dir.to_path_buf(),
             sandbox_enabled: false,
-            confirm_destructive: false,
+            io: std::sync::Arc::new(crate::io::NullIO),
+            compact_mode: false,
+            lsp_client: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            mcp_client: None,
+            nesting_depth: 0,
+            llm: std::sync::Arc::new(crate::llm::NullLlmProvider),
+            tools: std::sync::Arc::new(crate::tools::ToolRegistry::new()),
         }
     }
     #[tokio::test]

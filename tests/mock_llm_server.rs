@@ -4,12 +4,7 @@
 /// the server with a queue of `MockScenario` values; each POST to
 /// `/v1/chat/completions` pops the front scenario and streams the response.
 use axum::{
-    body::Body,
-    extract::State,
-    http::HeaderMap,
-    response::Response,
-    routing::post,
-    Router,
+    body::Body, extract::State, http::HeaderMap, response::Response, routing::post, Router,
 };
 use std::{
     collections::VecDeque,

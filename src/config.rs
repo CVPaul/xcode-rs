@@ -1,3 +1,5 @@
+use crate::agent::context_manager::ContextConfig;
+use crate::llm::retry::RetryConfig;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -14,6 +16,15 @@ pub struct Config {
     pub project_dir: Option<PathBuf>,
     pub sandbox: SandboxConfig,
     pub agent: AgentConfig,
+    /// LSP server configuration.  Disabled by default — enabled by
+    /// providing a `lsp.server_command` or by auto-detection at runtime.
+    #[serde(default)]
+    pub lsp: LspConfig,
+    /// List of external MCP servers to connect on startup.  Each entry
+    /// describes a subprocess to spawn; xcodeai will register all tools
+    /// the server advertises.  Empty by default — add entries to enable MCP.
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -39,14 +50,28 @@ pub struct AgentConfig {
     /// without the `[TASK_COMPLETE]` marker.  Prevents infinite loops if the
     /// LLM never produces the marker.  Default: 20.
     pub max_auto_continues: u32,
+    /// Retry/back-off configuration for LLM HTTP calls.
+    /// Stored under the `"agent"` section in config.json.
+    pub retry: RetryConfig,
+    /// Smart context-window management configuration.
+    /// Stored under the `"agent"` section in config.json.
+    pub context: ContextConfig,
+    /// Compact mode: reduces tool output to 50 lines and adds a brevity
+    /// instruction to the system prompt.  Useful for quick tasks where
+    /// minimising token usage matters more than full output visibility.
+    /// Default: false.  Toggled at runtime by `/compact` in the REPL.
+    pub compact_mode: bool,
 }
 
+#[derive(Debug, Clone, Default)]
 pub struct ConfigOverrides {
     pub api_key: Option<String>,
     pub api_base: Option<String>,
     pub model: Option<String>,
     pub project_dir: Option<PathBuf>,
     pub no_sandbox: bool,
+    /// Enable compact mode (shorter tool output, brevity-focused system prompt).
+    pub compact: bool,
 }
 
 impl Default for Config {
@@ -66,7 +91,12 @@ impl Default for Config {
                 max_iterations: 25,
                 max_tool_calls_per_response: 10,
                 max_auto_continues: 20,
+                retry: RetryConfig::default(),
+                context: ContextConfig::default(),
+                compact_mode: false,
             },
+            lsp: LspConfig::default(),
+            mcp_servers: Vec::new(),
         }
     }
 }
@@ -95,8 +125,69 @@ impl Default for AgentConfig {
             max_iterations: 25,
             max_tool_calls_per_response: 10,
             max_auto_continues: 20,
+            retry: RetryConfig::default(),
+            context: ContextConfig::default(),
+            compact_mode: false,
         }
     }
+}
+
+// ─── McpServerConfig ────────────────────────────────────────────────────────
+
+/// Configuration for a single external MCP (Model Context Protocol) server.
+///
+/// Each entry in `config.mcp_servers` describes one subprocess to spawn at
+/// startup.  xcodeai will run `command` with `args`, perform the MCP
+/// `initialize` handshake, and register all discovered tools into the tool
+/// registry so the LLM can call them like any built-in tool.
+///
+/// # Example `config.json` entry
+///
+/// ```json
+/// {
+///   "mcp_servers": [
+///     {
+///       "name": "filesystem",
+///       "command": "npx",
+///       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+///       "env": {}
+///     }
+///   ]
+/// }
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(default)]
+pub struct McpServerConfig {
+    /// Human-readable label, used only in the `/mcp` REPL command output.
+    pub name: String,
+
+    /// The executable to run, e.g. `"npx"` or `"python"` or `"/usr/local/bin/my-mcp-server"`.
+    pub command: String,
+
+    /// CLI arguments forwarded to the subprocess, e.g. `["-y", "@mcp/fs", "/tmp"]`.
+    pub args: Vec<String>,
+
+    /// Extra environment variables injected into the subprocess.
+    /// Useful for passing secrets (API keys) without embedding them in `command`.
+    pub env: std::collections::HashMap<String, String>,
+}
+
+// ─── LspConfig ──────────────────────────────────────────────────────────────
+
+/// Configuration for the LSP (Language Server Protocol) client.
+///
+/// By default LSP is disabled (`enabled: false`).  To activate it:
+/// - set `enabled: true` in config.json, OR
+/// - rely on `LspClient::detect_server()` auto-detection at runtime.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(default)]
+pub struct LspConfig {
+    /// Whether the LSP integration is active.  Default: false.
+    pub enabled: bool,
+    /// Override the auto-detected server command.  E.g. `"rust-analyzer"`.
+    pub server_command: Option<String>,
+    /// Extra arguments passed to the server binary.  Default: empty.
+    pub args: Vec<String>,
 }
 
 impl Config {
@@ -164,9 +255,15 @@ impl Config {
         if overrides.no_sandbox {
             config.sandbox.enabled = false;
         }
+        // Apply compact mode override from CLI flag.
+        // Once set true here, it persists for the life of this config instance.
+        if overrides.compact {
+            config.agent.compact_mode = true;
+        }
 
         Ok(config)
     }
+
     /// Save current config back to the default config file path.
     /// Only persists provider.api_base and provider.api_key (not CLI-only fields
     /// like project_dir which should not be written to the shared config file).
@@ -189,8 +286,7 @@ impl Config {
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(&config)
-            .context("Failed to serialize config")?;
+        let json = serde_json::to_string_pretty(&config).context("Failed to serialize config")?;
         fs::write(&config_path, json)
             .with_context(|| format!("Failed to write config file: {:?}", config_path))?;
         Ok(())
@@ -213,6 +309,9 @@ mod tests {
         assert!(config.sandbox.enabled);
         assert_eq!(config.model, "gpt-4o");
         assert_eq!(config.provider.api_base, "https://api.openai.com/v1");
+        // Retry defaults should match RetryConfig::default()
+        assert_eq!(config.agent.retry.max_retries, 5);
+        assert_eq!(config.agent.retry.initial_delay_ms, 1000);
     }
 
     #[test]
@@ -243,7 +342,12 @@ mod tests {
                 max_iterations: 50,
                 max_tool_calls_per_response: 20,
                 max_auto_continues: 20,
+                retry: RetryConfig::default(),
+                context: ContextConfig::default(),
+                compact_mode: false,
             },
+            lsp: LspConfig::default(),
+            mcp_servers: vec![],
         };
 
         let json = serde_json::to_string_pretty(&test_config).unwrap();
@@ -256,6 +360,7 @@ mod tests {
             model: None,
             project_dir: None,
             no_sandbox: false,
+            compact: false,
         };
         let loaded = Config::load_from_path(Some(&config_path), &overrides).unwrap();
 
@@ -289,6 +394,7 @@ mod tests {
             model: None,
             project_dir: None,
             no_sandbox: false,
+            compact: false,
         };
         let config = Config::load_from_path(Some(&config_path), &overrides).unwrap();
 
@@ -323,6 +429,7 @@ mod tests {
             model: Some("cli-model".to_string()),
             project_dir: None,
             no_sandbox: false,
+            compact: false,
         };
         let config = Config::load_from_path(Some(&config_path), &overrides).unwrap();
 
@@ -354,6 +461,7 @@ mod tests {
             model: None,
             project_dir: None,
             no_sandbox: true,
+            compact: false,
         };
         let config = Config::load_from_path(Some(&config_path), &overrides).unwrap();
 
@@ -361,8 +469,8 @@ mod tests {
     }
 
     /// Verify that a config file written by an older version (missing newer
-    /// fields like `max_auto_continues`) still loads correctly — the missing
-    /// fields should silently receive their defaults.
+    /// fields like `max_auto_continues` or `retry`) still loads correctly —
+    /// the missing fields should silently receive their defaults.
     #[test]
     fn test_backwards_compatible_config() {
         let _lock = TEST_LOCK.lock().unwrap();
@@ -375,7 +483,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config.json");
 
-        // Simulate an old v0.7.x config file that lacks max_auto_continues
+        // Simulate an old v0.7.x config file that lacks max_auto_continues and retry
         let old_config_json = r#"{
   "provider": {
     "api_base": "https://api.openai.com/v1",
@@ -398,6 +506,7 @@ mod tests {
             model: None,
             project_dir: None,
             no_sandbox: false,
+            compact: false,
         };
         let loaded = Config::load_from_path(Some(&config_path), &overrides).unwrap();
 
@@ -406,7 +515,95 @@ mod tests {
         assert_eq!(loaded.agent.max_iterations, 25);
         assert!(!loaded.sandbox.enabled);
 
-        // Missing field should get default value
+        // Missing fields should get default values
         assert_eq!(loaded.agent.max_auto_continues, 20);
+        assert_eq!(loaded.agent.retry.max_retries, 5);
+    }
+
+    /// Verify that mcp_servers entries in config.json deserialise correctly,
+    /// and that old configs without the field still load (empty default).
+    #[test]
+    fn test_mcp_config_parsing() {
+        let _lock = TEST_LOCK.lock().unwrap();
+
+        std::env::remove_var("XCODE_API_KEY");
+        std::env::remove_var("XCODE_API_BASE");
+        std::env::remove_var("XCODE_MODEL");
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        // A config that declares one MCP server.
+        let json = r#"{
+  "provider": {
+    "api_base": "https://api.openai.com/v1",
+    "api_key": "test-key"
+  },
+  "model": "gpt-4o",
+  "mcp_servers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "env": { "MCP_FS_ROOT": "/tmp" }
+    }
+  ]
+}"#;
+        fs::write(&config_path, json).unwrap();
+
+        let overrides = ConfigOverrides {
+            api_key: None,
+            api_base: None,
+            model: None,
+            project_dir: None,
+            no_sandbox: false,
+            compact: false,
+        };
+        let cfg = Config::load_from_path(Some(&config_path), &overrides).unwrap();
+
+        // One server should have been parsed.
+        assert_eq!(cfg.mcp_servers.len(), 1);
+        let srv = &cfg.mcp_servers[0];
+        assert_eq!(srv.name, "filesystem");
+        assert_eq!(srv.command, "npx");
+        assert_eq!(
+            srv.args,
+            vec!["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+        );
+        assert_eq!(srv.env.get("MCP_FS_ROOT").map(String::as_str), Some("/tmp"));
+    }
+
+    /// An old config without mcp_servers should load fine and default to empty.
+    #[test]
+    fn test_mcp_servers_defaults_to_empty() {
+        let _lock = TEST_LOCK.lock().unwrap();
+
+        std::env::remove_var("XCODE_API_KEY");
+        std::env::remove_var("XCODE_API_BASE");
+        std::env::remove_var("XCODE_MODEL");
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        // Old-style config — no mcp_servers key at all.
+        let json = r#"{
+  "provider": { "api_base": "https://api.openai.com/v1", "api_key": "k" },
+  "model": "gpt-4o"
+}"#;
+        fs::write(&config_path, json).unwrap();
+
+        let overrides = ConfigOverrides {
+            api_key: None,
+            api_base: None,
+            model: None,
+            project_dir: None,
+            no_sandbox: false,
+            compact: false,
+        };
+        let cfg = Config::load_from_path(Some(&config_path), &overrides).unwrap();
+        assert!(
+            cfg.mcp_servers.is_empty(),
+            "mcp_servers should default to empty vec"
+        );
     }
 }

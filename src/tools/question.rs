@@ -354,7 +354,13 @@ mod tests {
         crate::tools::ToolContext {
             working_dir: std::path::PathBuf::from("/tmp"),
             sandbox_enabled: false,
-            confirm_destructive: false,
+            io: std::sync::Arc::new(crate::io::NullIO),
+            compact_mode: false,
+            lsp_client: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            mcp_client: None,
+            nesting_depth: 0,
+            llm: std::sync::Arc::new(crate::llm::NullLlmProvider),
+            tools: std::sync::Arc::new(crate::tools::ToolRegistry::new()),
         }
     }
 
@@ -400,7 +406,9 @@ mod tests {
         });
         let result = tool.execute(args, &ctx).await.unwrap();
         assert!(result.is_error);
-        assert!(result.output.contains("Missing required argument: question"));
+        assert!(result
+            .output
+            .contains("Missing required argument: question"));
     }
 
     #[tokio::test]

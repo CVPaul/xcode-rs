@@ -1,7 +1,7 @@
 use crate::tools::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct FileEditTool;
 
@@ -114,7 +114,7 @@ impl Tool for FileEditTool {
     }
 }
 
-fn resolve_path(path_str: &str, working_dir: &PathBuf) -> PathBuf {
+fn resolve_path(path_str: &str, working_dir: &Path) -> PathBuf {
     let p = PathBuf::from(path_str);
     if p.is_absolute() {
         p
@@ -133,7 +133,13 @@ mod tests {
         ToolContext {
             working_dir: dir.to_path_buf(),
             sandbox_enabled: false,
-            confirm_destructive: false,
+            io: std::sync::Arc::new(crate::io::NullIO),
+            compact_mode: false,
+            lsp_client: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            mcp_client: None,
+            nesting_depth: 0,
+            llm: std::sync::Arc::new(crate::llm::NullLlmProvider),
+            tools: std::sync::Arc::new(crate::tools::ToolRegistry::new()),
         }
     }
     #[tokio::test]

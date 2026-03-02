@@ -1,15 +1,30 @@
+use crate::io::AgentIO;
+use crate::llm::LlmProvider;
+use crate::lsp::LspClient;
+use crate::mcp::McpClient;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 pub mod bash;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
+pub mod git_blame;
+pub mod git_commit;
+pub mod git_diff;
+pub mod git_log;
 pub mod glob_search;
 pub mod grep_search;
+pub mod lsp_diagnostics;
+pub mod lsp_goto_def;
+pub mod lsp_references;
+pub mod mcp_resource;
 pub mod question;
+pub mod spawn_task;
 
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -19,18 +34,42 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolResult>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ToolContext {
     pub working_dir: PathBuf,
     /// Whether to route tool execution through the sandbox process.
     /// Currently set but not yet acted upon — sandbox integration is future work.
     #[allow(dead_code)]
     pub sandbox_enabled: bool,
-    /// When true, the agent will prompt the user for confirmation before executing
-    /// tool calls that are potentially destructive (e.g. `bash rm -rf`, `file_write`
-    /// to an existing file).  Set to false in non-interactive (run subcommand) mode
-    /// or when --yes/-y is passed.
-    pub confirm_destructive: bool,
+    /// I/O channel used by the agent for status output and confirmation prompts.
+    /// In terminal mode this is `Arc<TerminalIO>`; in tests it is `Arc<NullIO>`.
+    /// A future HTTP mode will pass `Arc<HttpIO>` here without touching the agent.
+    pub io: Arc<dyn AgentIO>,
+    /// When true, tool output is capped to 50 lines to save tokens.
+    /// Set via `--compact` CLI flag or `/compact` REPL command.
+    pub compact_mode: bool,
+    /// Lazily-started LSP client shared across all LSP tools.
+    /// Wrapped in `Arc<Mutex<Option<...>>>` so multiple tools can share it.
+    /// The first LSP tool call to run will start and initialize the server.
+    /// `None` if LSP is disabled in config or the server failed to start.
+    pub lsp_client: Arc<Mutex<Option<LspClient>>>,
+    /// Optional MCP client connection, shared across MCP-related tools.
+    /// `None` when no MCP server is connected.
+    /// Wrapped in `Option<Arc<Mutex<...>>>` so it can be absent and shared.
+    #[allow(dead_code)]
+    pub mcp_client: Option<Arc<Mutex<McpClient>>>,
+    /// How many levels deep the current agent is in a spawn_task nesting chain.
+    /// spawn_task increments this for child agents; at depth >= 3 it refuses
+    /// to spawn further so the stack cannot grow unboundedly.
+    /// The top-level REPL agent starts at depth 0.
+    pub nesting_depth: u32,
+    /// The active LLM provider for this agent context.
+    /// spawn_task needs access to the provider to give it to child agents.
+    /// We store it here as `Arc<dyn LlmProvider>` so it can be cloned cheaply.
+    pub llm: Arc<dyn LlmProvider>,
+    /// The full tool registry, shared via Arc so spawn_task can give child
+    /// agents the same set of tools without re-constructing the registry.
+    pub tools: Arc<ToolRegistry>,
 }
 
 pub struct ToolResult {

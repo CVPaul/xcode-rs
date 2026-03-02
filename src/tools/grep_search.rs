@@ -169,7 +169,13 @@ mod tests {
         ToolContext {
             working_dir: dir.path().to_path_buf(),
             sandbox_enabled: false,
-            confirm_destructive: false,
+            io: std::sync::Arc::new(crate::io::NullIO),
+            compact_mode: false,
+            lsp_client: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            mcp_client: None,
+            nesting_depth: 0,
+            llm: std::sync::Arc::new(crate::llm::NullLlmProvider),
+            tools: std::sync::Arc::new(crate::tools::ToolRegistry::new()),
         }
     }
     #[tokio::test]

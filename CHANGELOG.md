@@ -8,6 +8,128 @@ Versions follow [Semantic Versioning](https://semver.org/).
 ---
 
 
+## [2.0.0] — 2026-03-01
+
+### Phase 4: 企业微信 Ready — HTTP API, HttpIO, Image Support, Undo History, Integration Tests
+
+All tests pass (671 passing + 10 ignored doctests). `cargo clippy` reports 0 warnings.
+
+#### Added
+
+- **Task 31 — HTTP API Server** (`src/http/mod.rs`, `src/http/routes.rs`): axum-based REST API server. `xcodeai serve --port 8080` starts it. Session CRUD endpoints (`POST/GET/DELETE /sessions`, `GET /sessions/:id`, `GET /sessions/:id/messages`). CORS enabled via `tower-http`. `AppState` wraps `SessionStore` in `tokio::sync::Mutex` for `!Sync` safety.
+
+- **Task 32 — `HttpIO`** (`src/io/http.rs`): `AgentIO` implementation for HTTP mode. Uses `tokio::sync::mpsc` channel to stream `SseEvent`s (`Status`, `ToolCall`, `ToolResult`, `Error`, `Complete`) from the agent loop back to the SSE handler. `confirm_destructive` auto-approves in HTTP mode.
+
+- **Task 33 — Image / Multimodal Support** (`src/llm/mod.rs`): `image_to_content_part()` helper reads image files from disk, infers MIME type, base64-encodes them, and returns `ContentPart::ImageUrl` with a data URI. OpenAI, Anthropic, and Gemini provider encoders updated to handle `ImageUrl` parts.
+
+- **Task 34 — HTTP Agent Loop Endpoint** (`src/http/routes.rs`): `POST /sessions/:id/messages` spawns an async agent loop and streams events back as Server-Sent Events. Enforces 409 Conflict for concurrent executions via `AppState.active_sessions`. Persists assistant response to SQLite after completion.
+
+- **Task 35 — Markdown Rendering** (`src/io/terminal.rs`): `TerminalIO` now renders agent output through `termimad` for styled markdown in the terminal. `--no-markdown` flag disables rendering. `TerminalIO { no_markdown: bool }` struct.
+
+- **Task 36 — Multi-Step Undo History** (`src/session/store.rs`, `src/repl/commands.rs`): `undo_history` SQLite table (max 10 entries per session). `/undo` REPL command supports `bare` (undo last), `list`, and `/undo N` (undo last N steps). Each undo stash uses a unique UUID label.
+
+- **Task 37 — HTTP API Integration Tests** (`tests/http_integration.rs`, `src/lib.rs`): 6 real-TCP integration tests using `reqwest` against a live axum server backed by an in-memory SQLite store. Tests cover: 404 for missing session, 409 for concurrent execution, full SSE lifecycle, CRUD over TCP, CORS headers, SSE event termination. Added `src/lib.rs` to expose crate modules to integration tests.
+
+---
+
+
+## [1.2.0] — 2026-03-01
+
+### Phase 3: Extensibility — MCP, Multi-Provider, Task Orchestration
+
+All 303 tests pass (299 unit + 4 integration). `cargo clippy` reports 0 warnings.
+
+#### Added
+
+- **Task 20 — MCP Client** (`src/mcp/mod.rs`, `src/mcp/transport.rs`, `src/mcp/types.rs`): Full JSON-RPC 2.0 client over stdio transport with Content-Length framing (same protocol as LSP). Handles `initialize`/`initialized` handshake, `tools/list`, `tools/call`, `resources/list`, `resources/read`. Async request/response with sequential ID tracking. 27 unit tests.
+
+- **Task 21 — Anthropic Native Provider** (`src/llm/anthropic.rs`): Implements `LlmProvider` against the Anthropic Messages API. SSE streaming with `content_block_delta` events, native tool-use content blocks (`tool_use` / `tool_result`), `x-api-key` auth header, `anthropic-version` header, token usage from `usage` field in response.
+
+- **Task 22 — Task Graph** (`src/orchestrator/graph.rs`): `TaskGraph` DAG with `TaskNode`, `TaskStatus`. Kahn's algorithm topological sort, `compute_waves()` for parallel grouping, `next_ready()` for dependency-satisfied tasks, cycle detection. JSON serialisation. 20 unit tests.
+
+- **Task 23 — Gemini Native Provider** (`src/llm/gemini.rs`): Implements `LlmProvider` against the Google Generative Language API. SSE streaming (each `data:` chunk is a partial JSON), `function_declarations` tool format, `function_response` parts for tool results, `?key=` query param auth, token usage from `usageMetadata`.
+
+- **Task 24 — MCP Tool Discovery & Registration** (`src/mcp/bridge.rs`): `register_mcp_tools(client, registry)` calls `tools/list` on a connected MCP server and registers each discovered tool as a `McpTool` in the `ToolRegistry`. Discovered tools execute via `tools/call` and return `ToolResult`.
+
+- **Task 25 — MCP Resource Access** (`src/tools/mcp_resource.rs`): `mcp_resource` tool lets the agent read MCP server resources by URI (`resources/read`). Returns text or base64-decoded content. Gracefully handles missing MCP client with a clear error.
+
+- **Task 26 — Task Graph Executor** (`src/orchestrator/executor.rs`): `TaskExecutor` drives parallel wave execution. Each wave's ready tasks spawn concurrent `tokio` tasks. Completed/failed results flow back via `JoinSet`. Executor updates graph state between waves. 4 e2e-style tests.
+
+- **Task 27 — Provider Registry** (`src/llm/registry.rs`): `ProviderRegistry::create_provider(base, key)` dispatches on sentinel strings (`copilot`, `anthropic`, `gemini`) or URL prefix to instantiate the correct `LlmProvider`. Used by `AgentContext` and `/connect`.
+
+- **Task 28 — `spawn_task` Tool** (`src/tools/spawn_task.rs`): Lets the agent create a sub-agent task on the fly. Accepts `description` and optional `agent_config` overrides. Builds a `TaskGraph` with one node, runs it through `TaskExecutor`, and returns the `AgentResult` as a tool result. Depth-limited to prevent infinite nesting.
+
+- **Task 29 — MCP Config + REPL Integration** (`src/config.rs`, `src/context.rs`, `src/repl/commands.rs`): `McpServerConfig` struct added to `Config` with `#[serde(default)]` — old configs without `mcp_servers` continue to work. `AgentContext::new()` is now `async` and spawns all configured MCP servers at startup, registering their tools before `Arc::new(registry)`. `/mcp` REPL command lists connected servers and their tools.
+
+---
+
+## [1.1.0] — 2026-03-01
+
+### Phase 2: Project Understanding
+
+All 168 tests pass (164 unit + 4 integration). `cargo clippy` reports 0 warnings.
+
+#### Added
+
+- **Task 12 — LSP Client** (`src/lsp/mod.rs`, `src/lsp/transport.rs`): JSON-RPC 2.0 over stdio. Handles Content-Length framing, `initialize`/`initialized` handshake, `shutdown`/`exit` teardown, and request/response ID tracking. Auto-detects server (`rust-analyzer`, `typescript-language-server`, `pylsp`) from project files. Config option `lsp.server_command` overrides auto-detection.
+
+- **Task 13 — `git_diff` tool** (`src/tools/git_diff.rs`): Shows unstaged diffs, staged diffs (`staged: true`), or diffs against a commit (`commit: "HEAD~1"`). Optional `path` filter. Output truncated at 50 KB.
+
+- **Task 14 — `git_commit` tool** (`src/tools/git_commit.rs`): Stages a list of files (or all changes) then commits with the provided message. Marked destructive — requires user confirmation in interactive REPL mode. Returns the new commit hash.
+
+- **Task 15 — `git_log` & `git_blame` tools** (`src/tools/git_log.rs`, `src/tools/git_blame.rs`): `git_log` supports count, path filter, oneline/full format, and commit-message grep. `git_blame` supports optional line range (`start_line` / `end_line`).
+
+- **Task 16 — Compact mode** (`src/config.rs`, `src/agent/coder.rs`, `src/tools/file_read.rs`, `src/repl/commands.rs`): `/compact` REPL command and `--compact` CLI flag toggle compact mode. In compact mode, tool results are capped at 50 lines, file reads return focused windows, and the system prompt is augmented with a concise-output instruction.
+
+- **Task 17 — `lsp_diagnostics` tool** (`src/tools/lsp_diagnostics.rs`): Opens a file via `textDocument/didOpen`, collects `textDocument/publishDiagnostics` notifications, and returns formatted `file:line:col: severity: message` output. Optional `severity` filter (error / warning / all). LSP client started lazily on first use.
+
+- **Task 18 — `lsp_goto_definition` & `lsp_find_references` tools** (`src/tools/lsp_goto_def.rs`, `src/tools/lsp_references.rs`): `lsp_goto_definition` sends `textDocument/definition` and returns `file:line:col` locations. `lsp_find_references` sends `textDocument/references` and returns all reference locations. Both reuse the shared `ensure_lsp_started`, `path_to_uri`, `detect_language_id`, and `parse_locations` helpers.
+
+---
+
+## [1.0.0] — 2026-03-01
+
+### Phase 1: Autonomous Reliability (Production-Ready)
+
+All 129 tests pass (125 unit + 4 integration). `cargo clippy` reports 0 warnings.
+
+#### Added
+
+- **Task 7 — Retry & Error Recovery** (`src/llm/retry.rs`): Transparent retry layer wraps every LLM HTTP call. Retries on 429, 500, 502, 503, timeout, and network errors with exponential backoff (1 s → 2 s → 4 s, capped at 60 s). Respects `Retry-After` response header. Permanent errors (400, 401, 403, 404) propagate immediately. Configurable `max_retries` (default 5).
+
+- **Task 8 — AGENTS.md Auto-Loading** (`src/agent/agents_md.rs`): On every run, xcodeai walks up from the project root looking for `AGENTS.md`, `.agents.md`, `xcodeai.agents.md` (or lowercase variants). The first file found is prepended verbatim to the system prompt as project-specific rules. Lets teams encode coding style, tool restrictions, and workflow conventions directly in the repo.
+
+- **Task 9 — Token & Cost Tracking** (`src/tracking.rs`): Every LLM turn records `prompt_tokens`, `completion_tokens`, and a cost estimate (based on known per-million-token rates for GPT-4o, GPT-4o-mini, DeepSeek, Copilot). Per-turn usage is printed in the agent footer. The REPL `/tokens` command shows a full session breakdown. Totals are persisted to SQLite in the sessions table.
+
+- **Task 10 — Smart Context Window Management** (`src/agent/context_manager.rs`): `ContextManager` monitors accumulated message size against a configurable budget (default 400 000 chars, 80 % threshold). When the threshold is crossed it first tries LLM-based summarisation (sends the oldest messages to the LLM and replaces them with a concise summary); if summarisation fails or `strategy = truncate` is set, it falls back to hard truncation, always preserving the system prompt and the most recent messages. A `[context compacted]` marker is injected so the model knows history was condensed.
+
+---
+
+## [0.9.0] — 2026-03-01
+
+### Phase 0: Architectural Refactor
+
+This release completes a full architectural cleanup preparing the codebase for Phase 1 (autonomous reliability) and beyond. No user-visible behaviour changes; all 90 tests pass.
+
+#### Refactors
+
+- **Extract REPL module** (`src/repl/mod.rs`, `src/repl/commands.rs`): The interactive REPL loop and all `/command` handlers are now in their own module. `main.rs` is reduced to CLI declarations and dispatch only.
+
+- **Extract AgentContext** (`src/context.rs`): `AgentContext` struct and its builder are now in a dedicated module. Both REPL mode and `run` subcommand share the same context construction path with no duplication.
+
+- **Usage struct** (`src/llm/mod.rs`): `LlmResponse` now carries an `Option<Usage>` field (`prompt_tokens`, `completion_tokens`, `total_tokens`). The OpenAI client requests `stream_options: { include_usage: true }` and parses usage from the final SSE chunk.
+
+- **ContentPart enum** (`src/llm/mod.rs`): `Message.content` is now `Vec<ContentPart>` instead of `Option<String>`. Supports `Text`, `ImageUrl`, `ToolUse`, and `ToolResult` variants. Custom `Serialize`/`Deserialize` maintains full backwards compatibility with existing session databases — old string-content sessions still load correctly.
+
+- **AgentIO trait** (`src/io/`): A new `AgentIO` trait decouples the agent loop from the terminal. Three implementations ship: `TerminalIO` (interactive REPL, reads stdin for confirmations), `AutoApproveIO` (batch `run` mode — outputs to terminal but never blocks stdin), and `NullIO` (silent, for unit tests). `ToolContext` now holds `Arc<dyn AgentIO>` instead of a bare `confirm_destructive: bool` flag.
+
+#### Bug fixes
+
+- `xcodeai run` (non-interactive batch mode) now uses `AutoApproveIO` instead of `TerminalIO`, matching the old `confirm_destructive: false` behaviour and preventing potential stdin hangs in non-interactive environments.
+
+---
+
+
 ## [0.8.0] — 2026-03-01
 
 ### Added

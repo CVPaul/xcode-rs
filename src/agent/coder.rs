@@ -1,17 +1,35 @@
-use crate::agent::{truncate_messages, Agent, AgentResult};
+use crate::agent::context_manager::ContextManager;
+use crate::agent::{Agent, AgentResult};
 use crate::config::AgentConfig;
 use crate::llm::{LlmProvider, Message, ToolDefinition};
 use crate::tools::{ToolContext, ToolRegistry};
+use crate::tracking::SessionTracker;
 use anyhow::Result;
 use async_trait::async_trait;
 
 pub struct CoderAgent {
     pub config: AgentConfig,
+    /// Optional content from an AGENTS.md file in the project root.
+    /// When present, this is prepended to the base system prompt so the
+    /// agent is aware of project-specific rules before it starts working.
+    pub agents_md: Option<String>,
 }
 
 impl CoderAgent {
+    /// Create a CoderAgent without any AGENTS.md content.
+    /// The system prompt will be the default base prompt.
     pub fn new(config: AgentConfig) -> Self {
-        CoderAgent { config }
+        CoderAgent {
+            config,
+            agents_md: None,
+        }
+    }
+
+    /// Create a CoderAgent with optional AGENTS.md content.
+    /// If `agents_md` is `Some(content)`, that content is prepended to
+    /// the system prompt so project-specific rules take effect immediately.
+    pub fn new_with_agents_md(config: AgentConfig, agents_md: Option<String>) -> Self {
+        CoderAgent { config, agents_md }
     }
 }
 
@@ -21,7 +39,7 @@ impl Agent for CoderAgent {
         "coder"
     }
 
-    fn system_prompt(&self) -> &str {
+    fn system_prompt(&self) -> String {
         // ──────────────────────────────────────────────────────────────────────
         // This prompt is the single most important piece of text in the project.
         // A weak system prompt produces verbose, over-explaining agents that ask
@@ -35,7 +53,7 @@ impl Agent for CoderAgent {
         // for that marker to decide whether to stop or inject a "continue"
         // message.  If you change the marker here, update the helper too.
         // ──────────────────────────────────────────────────────────────────────
-        concat!(
+        let base = concat!(
             "You are xcodeai, an expert autonomous software engineer.\n",
             "\n",
             "## Task execution workflow\n",
@@ -75,7 +93,28 @@ impl Agent for CoderAgent {
             "- Do not repeat the user's instructions back to them.\n",
             "- Do not explain what a tool does — just use it.\n",
             "- NEVER output `[TASK_COMPLETE]` prematurely. Only use it after ALL steps are done and verified.\n"
-        )
+        );
+
+        // If project rules were loaded from an AGENTS.md file, prepend them
+        // to the base prompt.  This places project conventions BEFORE the
+        // general instructions so the LLM sees them first.
+        // Assemble the final prompt: AGENTS.md project rules (if any) come first,
+        // so the LLM sees project-specific conventions before general instructions.
+        let prompt = match &self.agents_md {
+            Some(content) => format!("{0}\n\n---\n\n{1}", content, base),
+            None => base.to_string(),
+        };
+
+        // In compact mode, append a brevity instruction so the LLM trims its
+        // prose and outputs code directly without lengthy explanations.
+        if self.config.compact_mode {
+            format!(
+                "{}\n\n## Compact mode\nBe extremely concise. Skip lengthy explanations. Output code directly. Minimize prose.",
+                prompt
+            )
+        } else {
+            prompt
+        }
     }
 
     async fn run(
@@ -89,9 +128,23 @@ impl Agent for CoderAgent {
         let mut iterations = 0u32;
         let mut tool_calls_total = 0u32;
         let mut auto_continues = 0u32;
+        // Track token usage across all LLM calls in this task.
+        // The model name is left empty here — the REPL fills it in
+        // from ctx.config.model after execute() returns, so cost
+        // estimation can look up the right price row.
+        let mut tracker = SessionTracker::new("");
+        // Context manager: handles summarisation/truncation when the message
+        // history approaches the context-window limit.  One instance per run.
+        let mut context_mgr = ContextManager::new(self.config.context.clone());
+
+        // Absolute hard ceiling — prevents truly infinite loops even when the
+        // LLM keeps insisting it isn't done.  This is a safety net, NOT a
+        // normal stopping condition.  Normal stopping is via [TASK_COMPLETE].
+        const ABSOLUTE_MAX_ITERATIONS: u32 = 200;
         loop {
-            truncate_messages(messages, 400_000);
+            context_mgr.manage(messages, llm).await?;
             let response = llm.chat_completion(messages, &tool_defs).await?;
+            tracker.record(response.usage.as_ref());
 
             // ── No tool calls → the LLM returned text only ──────────────────
             // This is either:
@@ -111,6 +164,7 @@ impl Agent for CoderAgent {
             if !has_tool_calls {
                 let text = response
                     .content
+                    .clone()
                     .unwrap_or_else(|| "Task completed.".to_string());
 
                 // NOTE: Do NOT println! here — the content was already streamed
@@ -130,20 +184,24 @@ impl Agent for CoderAgent {
                             "Reached max auto-continues ({}). Stopping.",
                             self.config.max_auto_continues
                         );
-                        eprintln!(
+                        // Route through AgentIO instead of eprintln! directly.
+                        // This makes the message visible in terminal mode and
+                        // silently dropped in test (NullIO) mode.
+                        ctx.io.write_error(&format!(
                             "\n  {} {}",
                             console::style("!").yellow().bold(),
                             console::style(format!(
                                 "Reached auto-continue limit ({}). The task may not be fully complete.",
                                 self.config.max_auto_continues
                             )).yellow(),
-                        );
+                        )).await.ok();
                     }
                     return Ok(AgentResult {
                         final_message: text,
                         iterations,
                         tool_calls_total,
                         auto_continues,
+                        tracker: tracker.clone(),
                     });
                 }
 
@@ -158,12 +216,15 @@ impl Agent for CoderAgent {
                 ));
 
                 auto_continues += 1;
-                eprintln!(
-                    "\n  {} {}",
-                    console::style("▶").cyan(),
-                    console::style("auto-continuing…").dim(),
-                );
-                continue;
+                // Show the "auto-continuing" banner through AgentIO.
+                ctx.io
+                    .show_status(&format!(
+                        "\n  {} {}",
+                        console::style("▶").cyan(),
+                        console::style("auto-continuing…").dim(),
+                    ))
+                    .await
+                    .ok();
             }
             messages.push(Message::assistant(
                 response.content.clone(),
@@ -182,36 +243,38 @@ impl Agent for CoderAgent {
                 // This is printed to stderr so it doesn't interfere with captured output
                 // in tests, while still appearing correctly in a real terminal session.
                 let args_preview = format_args_preview(&tool_call.function.arguments);
-                eprintln!(
-                    "  {} {} {}  {}",
-                    console::style("→").cyan().dim(),
-                    console::style(&tool_call.function.name).cyan(),
-                    console::style("(").dim(),
-                    console::style(&args_preview).dim(),
-                );
+                // Route tool-call display through AgentIO (NullIO drops it in tests).
+                ctx.io
+                    .show_tool_call(&tool_call.function.name, &args_preview)
+                    .await
+                    .ok();
 
                 // ── Destructive tool call confirmation ─────────────────────────────────
-                // When `ctx.confirm_destructive` is true (interactive REPL without --yes),
-                // check if this call looks potentially dangerous.  If so, prompt the user.
-                // On 'n' / Enter, feed a synthetic "denied" tool result back so the LLM
-                // can adapt its plan rather than getting confused by a missing result.
-                if ctx.confirm_destructive
-                    && is_destructive_call(&tool_call.function.name, &args, &ctx.working_dir)
+                // Previously this checked `ctx.confirm_destructive` (a bool).  Now
+                // we always ask the io layer.  TerminalIO prompts the user;
+                // AutoApproveIO always returns true; NullIO always returns false.
+                //
+                // is_destructive_call() is still the gate: we only ask for
+                // confirmation when the call looks dangerous.  Non-dangerous calls
+                // go through unconditionally.
+                if is_destructive_call(&tool_call.function.name, &args, &ctx.working_dir)
+                    && !ctx
+                        .io
+                        .confirm_destructive(&tool_call.function.name, &args_preview)
+                        .await
+                        .unwrap_or(false)
                 {
-                    if !prompt_confirm(&tool_call.function.name, &args_preview).await {
-                        eprintln!(
-                            "  {} {}",
-                            console::style("✗ skipped").red(),
-                            console::style("(denied by user)").dim(),
-                        );
-                        // Feed a synthetic tool result so the LLM knows this call
-                        // was not executed.  It can then adjust its plan.
-                        messages.push(Message::tool(
-                            tool_call.id.clone(),
-                            "Tool call was denied by the user. Do not retry this specific operation. Ask the user how they would like to proceed instead.".to_string(),
-                        ));
-                        continue;
-                    }
+                    ctx.io
+                        .show_tool_result("skipped (denied by user)", true)
+                        .await
+                        .ok();
+                    // Feed a synthetic tool result so the LLM knows this call
+                    // was not executed.  It can then adjust its plan.
+                    messages.push(Message::tool(
+                        tool_call.id.clone(),
+                        "Tool call was denied by the user. Do not retry this specific operation. Ask the user how they would like to proceed instead.".to_string(),
+                    ));
+                    continue;
                 }
 
                 let result = if let Some(tool) = tools.get(&tool_call.function.name) {
@@ -230,38 +293,84 @@ impl Agent for CoderAgent {
                 };
 
                 // Show brief result so the user can see progress.
-                let result_preview: String = result.output.lines().next()
+                let result_preview: String = result
+                    .output
+                    .lines()
+                    .next()
                     .unwrap_or("")
-                    .chars().take(120).collect();
-                if result.is_error {
-                    eprintln!(
-                        "  {} {}",
-                        console::style("← error:").red().dim(),
-                        console::style(&result_preview).red().dim(),
-                    );
-                } else {
-                    eprintln!(
-                        "  {} {}",
-                        console::style("←").dim(),
-                        console::style(&result_preview).dim(),
-                    );
-                }
+                    .chars()
+                    .take(120)
+                    .collect();
+                // Route through AgentIO — NullIO silently drops this in tests.
+                ctx.io
+                    .show_tool_result(&result_preview, result.is_error)
+                    .await
+                    .ok();
 
                 messages.push(Message::tool(tool_call.id.clone(), result.output));
             }
             iterations += 1;
-            if iterations >= self.config.max_iterations {
+
+            // ── Iteration checkpoint ────────────────────────────────────
+            // Instead of hard-stopping at max_iterations, we ask the LLM
+            // whether the task is actually done.  If the LLM is mid-task,
+            // it will keep working.  This makes the agent truly autonomous.
+            // The ABSOLUTE_MAX_ITERATIONS constant above is the real safety
+            // net for infinite loops.
+            if iterations >= ABSOLUTE_MAX_ITERATIONS {
                 let warning = format!(
-                    "Reached maximum iterations ({}). Stopping.",
-                    self.config.max_iterations
+                    "Reached absolute iteration limit ({}).  Stopping for safety.",
+                    ABSOLUTE_MAX_ITERATIONS
                 );
                 tracing::warn!("{}", warning);
+                // Route the hard-stop warning through AgentIO.
+                ctx.io
+                    .write_error(&format!(
+                        "\n  {} {}",
+                        console::style("!").yellow().bold(),
+                        console::style(&warning).yellow(),
+                    ))
+                    .await
+                    .ok();
                 return Ok(AgentResult {
                     final_message: warning,
                     iterations,
                     tool_calls_total,
                     auto_continues,
+                    tracker,
                 });
+            }
+
+            // Periodic checkpoint: every `max_iterations` rounds, nudge the
+            // LLM to evaluate whether the task is complete.  If it IS done,
+            // the LLM will output [TASK_COMPLETE] on the next text-only turn
+            // and the auto-continue logic above will catch it.  If it ISN'T
+            // done, it keeps working — no artificial interruption.
+            if iterations.is_multiple_of(self.config.max_iterations) {
+                tracing::info!(
+                    "Checkpoint at iteration {} — nudging LLM to assess progress.",
+                    iterations
+                );
+                // Route the checkpoint banner through AgentIO.
+                ctx.io
+                    .show_status(&format!(
+                        "\n  {} {}",
+                        console::style("◆").cyan(),
+                        console::style(format!(
+                            "checkpoint ({} iterations) — verifying task progress…",
+                            iterations
+                        ))
+                        .dim(),
+                    ))
+                    .await
+                    .ok();
+                messages.push(Message::user(
+                    "You have been working for a while. Assess your progress: \
+                    if the task is fully complete and verified, output your final \
+                    summary ending with [TASK_COMPLETE]. If the task is NOT done, \
+                    state what remains and continue working immediately. Do NOT stop \
+                    unless everything is finished.",
+                ));
             }
         }
     }
@@ -336,7 +445,11 @@ fn format_args_preview(arguments: &str) -> String {
 ///
 /// Conservative on false-negatives: it is better to ask one extra time than to
 /// silently delete something important.  The user can always pass --yes to skip.
-fn is_destructive_call(tool_name: &str, args: &serde_json::Value, working_dir: &std::path::Path) -> bool {
+fn is_destructive_call(
+    tool_name: &str,
+    args: &serde_json::Value,
+    working_dir: &std::path::Path,
+) -> bool {
     match tool_name {
         "bash" => {
             // Inspect the command string for patterns that typically destroy data.
@@ -345,19 +458,28 @@ fn is_destructive_call(tool_name: &str, args: &serde_json::Value, working_dir: &
             // or preceded by space/newline/semicolon/pipe/ampersand, to avoid
             // false-positives on words like "remove_prefix" or filenames.
             let dangerous_patterns: &[&str] = &[
-                "rm ", "rm\t", "rm\n",      // rm with args
-                "rmdir ", "rmdir\t",        // rmdir
-                "dd ", "dd\t",              // dd (disk dump — destroys devices)
-                "shred ", "shred\t",        // secure delete
-                "wipefs ", "wipefs\t",      // wipe filesystem
-                "mkfs",                     // format filesystem
-                "truncate ", "truncate\t",  // truncate file
-                ":> ",                      // shell truncation idiom
-                "git reset --hard",         // destructive git operations
-                "git clean -f",             // remove untracked files
-                "git push --force",         // force-push
-                "drop table", "DROP TABLE", // SQL drops
-                "drop database", "DROP DATABASE",
+                "rm ",
+                "rm\t",
+                "rm\n", // rm with args
+                "rmdir ",
+                "rmdir\t", // rmdir
+                "dd ",
+                "dd\t", // dd (disk dump — destroys devices)
+                "shred ",
+                "shred\t", // secure delete
+                "wipefs ",
+                "wipefs\t", // wipe filesystem
+                "mkfs",     // format filesystem
+                "truncate ",
+                "truncate\t",       // truncate file
+                ":> ",              // shell truncation idiom
+                "git reset --hard", // destructive git operations
+                "git clean -f",     // remove untracked files
+                "git push --force", // force-push
+                "drop table",
+                "DROP TABLE", // SQL drops
+                "drop database",
+                "DROP DATABASE",
             ];
             dangerous_patterns.iter().any(|p| cmd.contains(p))
         }
@@ -376,39 +498,11 @@ fn is_destructive_call(tool_name: &str, args: &serde_json::Value, working_dir: &
             }
         }
         // file_edit has an old_string guard so it is self-confirming.
-        // file_read, glob_search, grep_search are read-only.
+        // file_read, glob_search, grep_search, git_diff, git_log, git_blame are read-only.
+        // git_commit is destructive — always requires confirmation.
+        "git_commit" => true,
         _ => false,
     }
-}
-
-/// Prompt the user for confirmation before a destructive tool call.
-/// Returns true if the user confirmed (typed 'y' or 'Y'), false otherwise.
-///
-/// Uses tokio's blocking task so the async runtime is not blocked while
-/// waiting for stdin.
-async fn prompt_confirm(tool_name: &str, args_preview: &str) -> bool {
-    use std::io::Write;
-    // Print the warning prompt to stderr (same stream as tool-call output)
-    eprint!(
-        "  {} {} {}  {}  {} ",
-        console::style("⚠").yellow().bold(),
-        console::style(tool_name).yellow(),
-        console::style("(").dim(),
-        console::style(args_preview).yellow(),
-        console::style("[y/N]:").dim(),
-    );
-    let _ = std::io::stderr().flush();
-
-    // Read one line from stdin in a blocking thread (avoids blocking the async executor).
-    let answer = tokio::task::spawn_blocking(|| {
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line).unwrap_or(0);
-        line.trim().to_lowercase()
-    })
-    .await
-    .unwrap_or_default();
-
-    answer == "y"
 }
 
 // ─── Plan mode system prompt ──────────────────────────────────────────────────
@@ -446,7 +540,13 @@ pub async fn run_plan_turn(
         }
         plan_messages.push(msg.clone());
     }
-    truncate_messages(&mut plan_messages, 400_000);
+    // Trim plan context the same way — use a one-shot ContextManager with
+    // default config (Summarize strategy, 400k budget).  The `?` propagates
+    // any LLM error but in practice plan turns are short and rarely hit the
+    // threshold.
+    ContextManager::new(crate::agent::context_manager::ContextConfig::default())
+        .manage(&mut plan_messages, llm)
+        .await?;
 
     // Build tool definitions — in Plan mode we only expose the `question` tool
     // so the LLM can ask the user structured questions but cannot modify files.
@@ -469,7 +569,9 @@ pub async fn run_plan_turn(
     let mut rounds = 0u32;
 
     loop {
-        let response = llm.chat_completion(&plan_messages, &question_tool_defs).await?;
+        let response = llm
+            .chat_completion(&plan_messages, &question_tool_defs)
+            .await?;
 
         // Check if the LLM made any tool calls (i.e. wants to ask a question).
         let has_tool_calls = response
@@ -496,9 +598,8 @@ pub async fn run_plan_turn(
         // Execute each tool call (should only be `question`, but we handle all).
         let tool_calls = response.tool_calls.unwrap_or_default();
         for tool_call in &tool_calls {
-            let args: serde_json::Value =
-                serde_json::from_str(&tool_call.function.arguments)
-                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
             let result = if let Some(tool) = tools.get(&tool_call.function.name) {
                 match tool.execute(args, tool_ctx).await {
@@ -516,15 +617,15 @@ pub async fn run_plan_turn(
             };
 
             // Push the tool result as a message so the LLM sees the user's answer.
-            plan_messages.push(Message::tool(
-                tool_call.id.clone(),
-                result.output,
-            ));
+            plan_messages.push(Message::tool(tool_call.id.clone(), result.output));
         }
 
         rounds += 1;
         if rounds >= MAX_QUESTION_ROUNDS {
-            return Ok("(Reached maximum question rounds. Please type your response directly.)".to_string());
+            return Ok(
+                "(Reached maximum question rounds. Please type your response directly.)"
+                    .to_string(),
+            );
         }
 
         // Loop back to call the LLM again — it now has the user's answer(s)
@@ -536,6 +637,7 @@ pub async fn run_plan_turn(
 mod tests {
     use super::*;
     use crate::config::AgentConfig;
+    use crate::llm::retry::RetryConfig;
     use crate::llm::{FunctionCall, LlmResponse, Message, Role, ToolCall, ToolDefinition};
     use crate::tools::{Tool, ToolContext, ToolRegistry, ToolResult};
     use anyhow::Result;
@@ -565,6 +667,7 @@ mod tests {
                 return Ok(LlmResponse {
                     content: Some("done [TASK_COMPLETE]".to_string()),
                     tool_calls: None,
+                    usage: None,
                 });
             }
             Ok(r.remove(0))
@@ -604,10 +707,18 @@ mod tests {
     }
 
     fn test_ctx() -> ToolContext {
+        // Use NullIO in tests: silently drops all output, denies destructive calls.
+        // This avoids any terminal I/O noise in test output.
         ToolContext {
             working_dir: std::path::PathBuf::from("/tmp"),
             sandbox_enabled: false,
-            confirm_destructive: false,
+            io: std::sync::Arc::new(crate::io::NullIO),
+            compact_mode: false,
+            lsp_client: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            mcp_client: None,
+            nesting_depth: 0,
+            llm: std::sync::Arc::new(crate::llm::NullLlmProvider),
+            tools: std::sync::Arc::new(crate::tools::ToolRegistry::new()),
         }
     }
 
@@ -616,6 +727,9 @@ mod tests {
             max_iterations: 5,
             max_tool_calls_per_response: 3,
             max_auto_continues: 5,
+            retry: RetryConfig::default(),
+            context: crate::agent::context_manager::ContextConfig::default(),
+            compact_mode: false,
         }
     }
 
@@ -625,10 +739,12 @@ mod tests {
             LlmResponse {
                 content: None,
                 tool_calls: Some(vec![make_tool_call("call1", "echo", r#"{"text":"hello"}"#)]),
+                usage: None,
             },
             LlmResponse {
                 content: Some("Task complete! [TASK_COMPLETE]".to_string()),
                 tool_calls: None,
+                usage: None,
             },
         ]);
         let mut registry = ToolRegistry::new();
@@ -648,11 +764,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_coder_max_iterations() {
-        let responses: Vec<LlmResponse> = (0..20)
+    async fn test_coder_checkpoint_continues() {
+        // The agent should NOT hard-stop at max_iterations.  Instead it
+        // injects a checkpoint message and keeps going.  With max_iterations=3,
+        // the MockLlm provides 6 tool-call responses, then falls through to the
+        // default [TASK_COMPLETE].  We expect all 6 iterations to run.
+        let responses: Vec<LlmResponse> = (0..6)
             .map(|_| LlmResponse {
                 content: None,
                 tool_calls: Some(vec![make_tool_call("call1", "echo", r#"{"text":"loop"}"#)]),
+                usage: None,
             })
             .collect();
         let llm = MockLlm::new(responses);
@@ -662,18 +783,38 @@ mod tests {
             max_iterations: 3,
             max_tool_calls_per_response: 1,
             max_auto_continues: 20,
+            retry: RetryConfig::default(),
+            context: crate::agent::context_manager::ContextConfig::default(),
+            compact_mode: false,
         };
         let agent = CoderAgent::new(config);
         let mut messages = vec![
             Message::system(agent.system_prompt()),
-            Message::user("loop forever"),
+            Message::user("loop a while"),
         ];
         let result = agent
             .run(&mut messages, &registry, &llm, &test_ctx())
             .await
             .unwrap();
-        assert_eq!(result.iterations, 3);
-        assert!(result.final_message.contains("maximum iterations"));
+        // All 6 tool-call iterations ran, then the MockLlm returned
+        // [TASK_COMPLETE] on the default response.
+        assert_eq!(result.iterations, 6);
+        assert!(result.final_message.contains("TASK_COMPLETE"));
+
+        // Verify that a checkpoint message was injected (at iteration 3).
+        let checkpoint_msgs: Vec<_> = messages
+            .iter()
+            .filter(|m| {
+                m.role == Role::User
+                    && m.text_content()
+                        .map(|c| c.contains("Assess your progress"))
+                        .unwrap_or(false)
+            })
+            .collect();
+        assert!(
+            !checkpoint_msgs.is_empty(),
+            "Expected at least one checkpoint message"
+        );
     }
 
     #[tokio::test]
@@ -685,10 +826,12 @@ mod tests {
             LlmResponse {
                 content: None,
                 tool_calls: Some(tool_calls),
+                usage: None,
             },
             LlmResponse {
                 content: Some("done [TASK_COMPLETE]".to_string()),
                 tool_calls: None,
+                usage: None,
             },
         ]);
         let mut registry = ToolRegistry::new();
@@ -697,6 +840,9 @@ mod tests {
             max_iterations: 5,
             max_tool_calls_per_response: 2,
             max_auto_continues: 20,
+            retry: RetryConfig::default(),
+            context: crate::agent::context_manager::ContextConfig::default(),
+            compact_mode: false,
         };
         let agent = CoderAgent::new(config);
         let mut messages = vec![
@@ -735,10 +881,12 @@ mod tests {
             LlmResponse {
                 content: None,
                 tool_calls: Some(vec![make_tool_call("e1", "fail", "{}")]),
+                usage: None,
             },
             LlmResponse {
                 content: Some("recovered [TASK_COMPLETE]".to_string()),
                 tool_calls: None,
+                usage: None,
             },
         ]);
         let mut registry = ToolRegistry::new();
@@ -757,8 +905,7 @@ mod tests {
         assert!(tool_result_msg.is_some());
         assert!(tool_result_msg
             .unwrap()
-            .content
-            .as_ref()
+            .text_content()
             .unwrap()
             .contains("something went wrong"));
     }
@@ -773,7 +920,7 @@ mod tests {
             messages.push(Message::assistant(Some(long_content.clone()), None));
         }
         let original_len = messages.len();
-        truncate_messages(&mut messages, 50_000);
+        crate::agent::context_manager::truncate_messages(&mut messages, 50_000);
         assert!(
             messages.len() < original_len,
             "Expected truncation but got {} msgs",
@@ -788,12 +935,11 @@ mod tests {
     async fn test_plan_turn_plain_text() {
         // When the LLM returns plain text (no tool calls), run_plan_turn
         // should return that text directly.
-        let llm = MockLlm::new(vec![
-            LlmResponse {
-                content: Some("Here is your plan: step 1, step 2.".to_string()),
-                tool_calls: None,
-            },
-        ]);
+        let llm = MockLlm::new(vec![LlmResponse {
+            content: Some("Here is your plan: step 1, step 2.".to_string()),
+            tool_calls: None,
+            usage: None,
+        }]);
         let registry = ToolRegistry::new(); // empty — no tools needed
         let ctx = test_ctx();
         let messages = vec![Message::user("Help me plan")];
@@ -816,8 +962,12 @@ mod tests {
         struct MockQuestionTool;
         #[async_trait]
         impl Tool for MockQuestionTool {
-            fn name(&self) -> &str { "question" }
-            fn description(&self) -> &str { "Mock question" }
+            fn name(&self) -> &str {
+                "question"
+            }
+            fn description(&self) -> &str {
+                "Mock question"
+            }
             fn parameters_schema(&self) -> serde_json::Value {
                 serde_json::json!({"type": "object"})
             }
@@ -842,11 +992,13 @@ mod tests {
                     "question",
                     r#"{"question":"Which approach?","options":[{"label":"A","description":"fast"},{"label":"B","description":"safe"}]}"#,
                 )]),
+                usage: None,
             },
             // Round 2: LLM sees the answer and produces final text
             LlmResponse {
                 content: Some("Great, you chose Option A. Here is the plan.".to_string()),
                 tool_calls: None,
+                usage: None,
             },
         ]);
 
@@ -871,8 +1023,12 @@ mod tests {
         struct MockQuestionTool;
         #[async_trait]
         impl Tool for MockQuestionTool {
-            fn name(&self) -> &str { "question" }
-            fn description(&self) -> &str { "Mock question" }
+            fn name(&self) -> &str {
+                "question"
+            }
+            fn description(&self) -> &str {
+                "Mock question"
+            }
             fn parameters_schema(&self) -> serde_json::Value {
                 serde_json::json!({"type": "object"})
             }
@@ -898,6 +1054,7 @@ mod tests {
                     "question",
                     r#"{"question":"Again?","options":[{"label":"Y","description":"yes"}]}"#,
                 )]),
+                usage: None,
             })
             .collect();
 

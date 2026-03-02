@@ -13,7 +13,7 @@ use mock_llm_server::{start_mock_server, MockScenario};
 use tempfile::TempDir;
 
 /// Helper: common provider args for a mock server at `addr`.
-#[allow(dead_code)]  // useful test helper, not all tests use it
+#[allow(dead_code)] // useful test helper, not all tests use it
 fn provider_args(addr: std::net::SocketAddr) -> [String; 4] {
     [
         "--no-sandbox".to_string(),
@@ -125,6 +125,8 @@ async fn test_run_creates_file_via_tool_call() {
 /// with a user-friendly error message (not a panic/stack trace).
 #[tokio::test]
 async fn test_run_handles_llm_error() {
+    // One 500 error is enough — we set XCODEAI_RETRY_MAX=0 so retries are
+    // disabled and the error propagates immediately.
     let (addr, _state) = start_mock_server(vec![MockScenario::ErrorResponse(500)]).await;
 
     let project_dir = TempDir::new().unwrap();
@@ -146,7 +148,8 @@ async fn test_run_handles_llm_error() {
             &project_path,
             "test error handling",
         ],
-        &[("HOME", &home_path)],
+        // Disable retries so the 500 error propagates immediately (no sleeps).
+        &[("HOME", &home_path), ("XCODEAI_RETRY_MAX", "0")],
     )
     .await;
 

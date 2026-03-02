@@ -48,8 +48,8 @@ impl CopilotOAuthToken {
         if !path.exists() {
             return Ok(None);
         }
-        let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read {:?}", path))?;
+        let content =
+            std::fs::read_to_string(&path).with_context(|| format!("Failed to read {:?}", path))?;
         let token: Self =
             serde_json::from_str(&content).context("Failed to parse copilot_auth.json")?;
         Ok(Some(token))
@@ -61,8 +61,7 @@ impl CopilotOAuthToken {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, json)
-            .with_context(|| format!("Failed to write {:?}", path))?;
+        std::fs::write(&path, json).with_context(|| format!("Failed to write {:?}", path))?;
         Ok(())
     }
 
@@ -146,7 +145,10 @@ pub async fn device_code_flow(client: &reqwest::Client) -> Result<CopilotOAuthTo
     println!("│  1. Visit: {:<47}│", resp.verification_uri);
     println!("│  2. Enter code:  {:<40}│", resp.user_code);
     println!("│                                                         │");
-    println!("│  Waiting for authorization... (expires in {}s)      │", resp.expires_in);
+    println!(
+        "│  Waiting for authorization... (expires in {}s)      │",
+        resp.expires_in
+    );
     println!("└─────────────────────────────────────────────────────────┘\n");
 
     // Step 3: poll for access token
@@ -204,7 +206,9 @@ pub async fn device_code_flow(client: &reqwest::Client) -> Result<CopilotOAuthTo
             println!("\n✓ Authorized! Fetching Copilot API token...");
             return Ok(CopilotOAuthToken {
                 access_token,
-                token_type: token_resp.token_type.unwrap_or_else(|| "bearer".to_string()),
+                token_type: token_resp
+                    .token_type
+                    .unwrap_or_else(|| "bearer".to_string()),
             });
         }
     }
@@ -215,28 +219,55 @@ pub async fn device_code_flow(client: &reqwest::Client) -> Result<CopilotOAuthTo
 #[derive(Deserialize)]
 struct CopilotTokenResponse {
     token: String,
-    expires_at: u64,
+    /// GitHub returns this as a float (Unix timestamp with fractional seconds),
+    /// so we accept `f64` and truncate to `u64`.
+    expires_at: f64,
 }
 
 /// Exchange the long-lived OAuth `access_token` for a short-lived Copilot API
 /// token. Call this before every LLM request when `CopilotApiToken::is_expired()`.
+///
+/// If the OAuth token is expired or revoked, GitHub returns a JSON error body
+/// like `{"message": "Bad credentials", "status": "401"}`. We detect that and
+/// surface a clear user-facing message telling them to run `/login` again.
 pub async fn refresh_copilot_token(
     client: &reqwest::Client,
     oauth_token: &str,
 ) -> Result<CopilotApiToken> {
-    let resp: CopilotTokenResponse = client
+    // Fetch raw bytes so we can inspect the body before deserializing.
+    let bytes = client
         .get("https://api.github.com/copilot_internal/v2/token")
         .header("Authorization", format!("token {}", oauth_token))
         .header("User-Agent", USER_AGENT)
         .send()
         .await
         .context("Failed to refresh Copilot token")?
-        .json()
+        .bytes()
         .await
-        .context("Failed to parse Copilot token response")?;
+        .context("Failed to read Copilot token response body")?;
 
-    Ok(CopilotApiToken {
-        token: resp.token,
-        expires_at: resp.expires_at,
-    })
+    // Try to parse as the happy-path struct first.
+    match serde_json::from_slice::<CopilotTokenResponse>(&bytes) {
+        Ok(resp) => Ok(CopilotApiToken {
+            token: resp.token,
+            expires_at: resp.expires_at as u64,
+        }),
+        Err(_) => {
+            // Parse failed — try to extract a human-readable error message.
+            // GitHub error bodies look like: {"message": "Bad credentials", "status": "401"}
+            let msg = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| v["message"].as_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| {
+                    String::from_utf8_lossy(&bytes)
+                        .chars()
+                        .take(120)
+                        .collect::<String>()
+                });
+            bail!(
+                "Copilot token refresh failed: {}\n\nYour saved credentials may be expired or revoked.\nRun /login to re-authenticate.",
+                msg
+            );
+        }
+    }
 }

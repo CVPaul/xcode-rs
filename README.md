@@ -5,7 +5,7 @@
 
 Fully autonomous AI coding agent in Rust. Give it a task — it writes the code, runs the tools, and finishes without asking for permission.
 
-Built as a lightweight alternative to opencode: no permission prompts, no heavy containers, optional rootless sandboxing via [sbox](https://github.com/CVPaul/sbox).
+Built as a complete, lightweight replacement for [opencode](https://opencode.ai): no TUI dependency, works on Termux, controllable via HTTP API for chat-interface integrations (e.g. 企业微信 vibe coding).
 
 ---
 
@@ -81,7 +81,7 @@ xcodeai
 ```
 
 ```
-  ✦ xcodeai v0.7.0  ·  gpt-4o  ·  /home/user/myproject  ·  no auth
+  ✦ xcodeai v2.0.0  ·  gpt-4o  ·  /home/user/myproject  ·  no auth
   Type your task. /help for commands. Ctrl-D to exit.
 ──────────────────────────────────────────────────────────────────
 xcodeai› Add error handling to all functions in lib.rs
@@ -102,19 +102,28 @@ You can pass the same flags as `run`:
 xcodeai --project ./mylib --model deepseek-chat --no-sandbox
 ```
 
+Pass `--no-markdown` to disable terminal markdown rendering:
+
+```bash
+xcodeai --no-markdown
+```
+
 #### REPL special commands
 
 | Command | Effect |
 |---|---|
 | `/plan` | Switch to **Plan mode** — discuss & clarify your task with the LLM (no file writes) |
 | `/act` | Switch back to **Act mode** — full tool execution |
-| `/undo` | Undo the last Act-mode run — restores working tree via `git stash pop` (requires git) |
+| `/undo` | Undo the last Act-mode run (restores git state via `git stash pop`) |
+| `/undo N` | Undo the last N runs |
+| `/undo list` | Show the undo history for this session |
 | `/login` | GitHub Copilot device-code OAuth (browser + code) |
 | `/logout` | Remove saved Copilot credentials |
 | `/connect` | Interactive provider selector — pick from built-in presets |
 | `/model [name]` | Show current model or switch immediately (`/model gpt-4o`) |
 | `/session` | Browse history or start a new session |
 | `/clear` | Start a fresh session (same as "New session" in `/session`) |
+| `/compact` | Summarise conversation history to reduce token usage |
 | `/help` | Show all commands + current mode |
 | `/exit` / `/quit` / `/q` | Exit xcodeai |
 | `Ctrl+C` | Clear current input line |
@@ -145,6 +154,18 @@ xcodeai› Go ahead and implement the plan.
 (agent executes autonomously, with context from the discussion above)
 ```
 
+#### Multi-Step Undo
+
+xcodeai records a git stash entry for every Act-mode agent run. You can rewind multiple steps:
+
+```
+xcodeai› /undo          # undo the most recent run
+xcodeai› /undo 3        # undo the last 3 runs
+xcodeai› /undo list     # see undo history (up to 10 entries)
+```
+
+Undo requires the project directory to be a git repository.
+
 ### Run a coding task
 
 ```bash
@@ -161,9 +182,79 @@ xcodeai run "Write tests for src/parser.rs" \
 # Skip sandbox (direct execution)
 xcodeai run "Refactor the database module" --project . --no-sandbox
 
+# Disable markdown rendering in output
+xcodeai run "Summarise all TODOs" --project . --no-markdown
+
 # All flags
 xcodeai run --help
 ```
+
+### HTTP API Server
+
+Start xcodeai as an HTTP server — useful for chat-interface integrations (企业微信, web UIs, scripts):
+
+```bash
+xcodeai serve                    # listens on 0.0.0.0:8080 (default)
+xcodeai serve --addr 127.0.0.1:9090
+```
+
+#### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/sessions` | Create a new session |
+| `GET` | `/sessions` | List recent sessions (latest 50) |
+| `GET` | `/sessions/:id` | Get one session with its message history |
+| `DELETE` | `/sessions/:id` | Delete a session |
+| `POST` | `/sessions/:id/messages` | Send a message and stream agent output via SSE |
+
+#### SSE Event Types
+
+`POST /sessions/:id/messages` returns a `text/event-stream` response. Each event has a named type:
+
+| Event name | Data fields | Meaning |
+|---|---|---|
+| `status` | `{"msg": "..."}` | Agent progress update or final response text |
+| `tool_call` | `{"name": "...", "args": "..."}` | Agent is about to call a tool |
+| `tool_result` | `{"preview": "...", "is_error": bool}` | Result of a tool call |
+| `error` | `{"msg": "..."}` | Agent-level error (not a tool error) |
+| `complete` | `{}` | Agent finished; stream ends |
+
+#### Example curl session
+
+```bash
+# Create a session
+SESSION=$(curl -s -X POST http://localhost:8080/sessions \
+  -H 'Content-type: application/json' \
+  -d '{"title":"my task"}' | jq -r .session_id)
+
+# Run an agent task, streaming output
+curl -N http://localhost:8080/sessions/$SESSION/messages \
+  -X POST \
+  -H 'Content-type: application/json' \
+  -d '{"content":"Create a Fibonacci function in fib.rs"}'
+
+# List all sessions
+curl http://localhost:8080/sessions
+
+# Get session with history
+curl http://localhost:8080/sessions/$SESSION
+
+# Delete it
+curl -X DELETE http://localhost:8080/sessions/$SESSION
+```
+
+#### Image Attachments
+
+Send image files alongside a message using the `images` field:
+
+```bash
+curl -X POST http://localhost:8080/sessions/$SESSION/messages \
+  -H 'Content-type: application/json' \
+  -d '{"content":"Implement the UI shown in this screenshot","images":["/path/to/screenshot.png"]}'
+```
+
+Images are read from disk and base64-encoded before being sent to the LLM. All three built-in providers (OpenAI, Anthropic, Gemini) support multimodal image input.
 
 ### Session management
 
@@ -179,16 +270,18 @@ xcodeai session show <session-id>
 
 ## Supported Providers
 
-Any OpenAI-compatible API endpoint works:
+Any OpenAI-compatible API endpoint works, plus native Anthropic and Gemini support:
 
-| Provider | api_base |
-|---|---|
-| OpenAI | `https://api.openai.com/v1` |
-| DeepSeek | `https://api.deepseek.com/v1` |
-| Qwen (Alibaba Cloud) | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| GLM (Zhipu AI) | `https://open.bigmodel.cn/api/paas/v4` |
-| Local (Ollama) | `http://localhost:11434/v1` |
-| **GitHub Copilot** | `copilot` (special sentinel) |
+| Provider | api_base | Notes |
+|---|---|---|
+| OpenAI | `https://api.openai.com/v1` | GPT-4o, o1, etc. |
+| Anthropic | `https://api.anthropic.com` | Claude 3.x — native, not OpenAI-compat |
+| Gemini | `https://generativelanguage.googleapis.com` | Gemini 1.5+ — native |
+| DeepSeek | `https://api.deepseek.com/v1` | OpenAI-compat |
+| Qwen (Alibaba Cloud) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | OpenAI-compat |
+| GLM (Zhipu AI) | `https://open.bigmodel.cn/api/paas/v4` | OpenAI-compat |
+| Local (Ollama) | `http://localhost:11434/v1` | OpenAI-compat |
+| **GitHub Copilot** | `copilot` (special sentinel) | Device-code OAuth, no API key needed |
 
 ### GitHub Copilot Authentication
 
@@ -223,7 +316,9 @@ xcodeai› /logout
 
 ## Tools
 
-The agent has access to six built-in tools:
+The agent has access to built-in tools plus optional Git, LSP, MCP, and orchestration tools:
+
+### Built-in Tools
 
 | Tool | Description | Key Parameters |
 |---|---|---|
@@ -233,6 +328,52 @@ The agent has access to six built-in tools:
 | `bash` | Execute a shell command | `command`, `timeout` (default 120s) |
 | `glob_search` | Find files by glob pattern | `pattern`, `path` (max 100 results) |
 | `grep_search` | Search file contents by regex | `pattern`, `path`, `include` (max 200 matches) |
+| `question` | Ask the user a clarifying question | `question` |
+
+### Git Tools
+
+| Tool | Description |
+|---|---|
+| `git_status` | Show working tree status |
+| `git_diff` | Show staged/unstaged changes |
+| `git_log` | Show recent commit history |
+| `git_commit` | Stage all changes and create a commit |
+| `git_checkout` | Switch branches or restore files |
+
+### LSP Tools
+
+| Tool | Description |
+|---|---|
+| `lsp_hover` | Get type info / docs at a position |
+| `lsp_definition` | Jump to symbol definition |
+| `lsp_references` | Find all usages of a symbol |
+| `lsp_diagnostics` | Get errors and warnings from the language server |
+| `lsp_rename` | Rename a symbol across the whole project |
+
+### Orchestration Tools (spawn_task)
+
+The `spawn_task` tool lets the agent delegate sub-tasks to child agents — enabling multi-agent workflows with up to 3 levels of nesting.
+
+```
+Parent agent
+  └── spawn_task("Write all unit tests")
+        └── Child agent (full tool access)
+```
+
+### MCP Tools
+
+xcodeai can connect to any [Model Context Protocol](https://modelcontextprotocol.io) server, automatically registering all tools the server exposes.
+
+Configure in `~/.config/xcode/config.json`:
+```json
+{
+  "mcp": {
+    "servers": [
+      { "name": "my-server", "command": "npx", "args": ["-y", "@my/mcp-server"] }
+    ]
+  }
+}
+```
 
 ---
 
@@ -259,7 +400,10 @@ xcodeai run "task"
 - **Director** — entry point, creates the CoderAgent and executes the task
 - **Coder** — runs the LLM ↔ tool loop until no more tool calls or `max_iterations` reached
 - **Context management** — keeps system prompt + last N messages when approaching the context window limit
+- **Compact mode** — `/compact` summarises conversation history to reduce token usage
 - **Session persistence** — every run is stored in SQLite at `~/.local/share/xcode/sessions.db`
+- **Token tracking** — prompt/completion/total tokens displayed after each run
+- **AGENTS.md** — place an `AGENTS.md` file in your project root to inject project-specific instructions into the system prompt
 
 ---
 
@@ -289,15 +433,15 @@ cd xcode
 export PATH="$HOME/.cargo/bin:$PATH"
 cargo build
 
-# Run tests (62 unit + 4 integration)
+# Run tests (671 total)
 cargo test
 
 # Release binary
 cargo build --release
 ./target/release/xcodeai --help
 
-# Lint
-cargo clippy
+# Lint (zero warnings enforced)
+cargo clippy -- -D warnings
 cargo fmt --check
 ```
 
@@ -305,17 +449,46 @@ cargo fmt --check
 
 ```
 src/
-├── main.rs           CLI entry point (clap)
-├── config.rs         Config loading with env/CLI overrides
-├── llm/              LlmProvider trait + OpenAI SSE streaming client
-├── tools/            Tool trait, ToolRegistry, 6 built-in tools
-├── agent/            Director + CoderAgent loop
-├── session/          Session types + SQLite store
-└── sandbox/          SboxSession + NoSandbox implementations
+├── main.rs            CLI entry point (clap) + serve_command()
+├── lib.rs             Public API surface for integration tests
+├── config.rs          Config loading with env/CLI overrides
+├── context.rs         AgentContext — shared agent state
+├── agent/             Director + CoderAgent loop + AGENTS.md loader
+├── auth/              GitHub Copilot device-code OAuth
+├── http/              HTTP API server (axum) — serve subcommand
+│   ├── mod.rs         AppState + start_server()
+│   └── routes.rs      REST + SSE route handlers
+├── io/                AgentIO trait for pluggable output
+│   ├── mod.rs         AgentIO trait + NullIO + AutoApproveIO
+│   ├── terminal.rs    TerminalIO — REPL/run output with markdown rendering
+│   └── http.rs        HttpIO — SSE event channel for HTTP API
+├── llm/               LLM providers + streaming
+│   ├── mod.rs         LlmProvider trait, Message, ContentPart (multimodal)
+│   ├── openai.rs      OpenAI / OpenAI-compat SSE client
+│   ├── anthropic.rs   Anthropic native SSE client
+│   ├── gemini.rs      Gemini native SSE client
+│   ├── registry.rs    ProviderRegistry — select provider by URL
+│   └── retry.rs       RetryingLlmProvider — exponential backoff
+├── tools/             Tool trait + registry + all tools
+│   ├── mod.rs         ToolRegistry, ToolContext
+│   ├── bash.rs, file_*.rs, glob_search.rs, grep_search.rs, question.rs
+│   ├── git/           Git tools (status, diff, log, commit, checkout)
+│   ├── lsp/           LSP tools (hover, definition, references, diagnostics, rename)
+│   ├── mcp_resource.rs MCP resource-read tool
+│   └── spawn_task.rs  Multi-agent orchestration tool
+├── session/           Session types + SQLite store + undo history
+├── sandbox/           SboxSession + NoSandbox implementations
+├── repl/              Interactive REPL loop + slash command dispatch
+├── lsp/               LSP client (JSON-RPC 2.0 over stdio)
+├── mcp/               MCP client (JSON-RPC 2.0 over stdio)
+├── orchestrator/      Multi-step task graph executor
+├── tracking.rs        Token usage tracking
+└── ui.rs              Console styling helpers
 tests/
-├── mock_llm_server.rs  axum mock SSE server for integration tests
-├── helpers.rs          Shared test utilities
-└── e2e_run.rs          End-to-end integration tests
+├── mock_llm_server.rs   axum mock SSE server for integration tests
+├── helpers.rs           Shared test utilities
+├── e2e_run.rs           End-to-end integration tests
+└── http_integration.rs  HTTP API integration tests
 ```
 
 ---
