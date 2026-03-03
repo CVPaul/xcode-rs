@@ -1,6 +1,6 @@
 [package]
 name = "xcodeai"
-version = "2.0.7"
+version = "2.0.8"
 edition = "2021"
 description = "Autonomous AI coding agent — zero human intervention, sbox sandboxed, OpenAI-compatible"
 license = "MIT"
@@ -43,6 +43,7 @@ termimad = "0.34"
 unicode-width = "0.2"
 
 ignore = "0.4"
+viuer = { version = "0.11", features = ["print-file"] }
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"

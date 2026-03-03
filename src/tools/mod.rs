@@ -28,6 +28,7 @@ pub mod mcp_resource;
 pub mod question;
 pub mod spawn_task;
 pub mod patch;
+pub mod display_image;
 
 #[async_trait]
 pub trait Tool: Send + Sync {

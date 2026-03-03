@@ -25,6 +25,7 @@ use crate::tools::spawn_task::SpawnTaskTool;
 use crate::tools::patch::PatchTool;
 use crate::tools::fetch::FetchTool;
 use crate::tools::ls::ListDirectoryTool;
+use crate::tools::display_image::DisplayImageTool;
 use crate::tools::{ToolContext, ToolRegistry};
 use anyhow::Result;
 use console::style;
@@ -113,6 +114,7 @@ impl AgentContext {
         registry.register(Box::new(ListDirectoryTool));
         registry.register(Box::new(FetchTool));
         registry.register(Box::new(PatchTool));
+        registry.register(Box::new(DisplayImageTool));
         // ctx.llm and ctx.tools at execute time, so no constructor args needed.
         registry.register(Box::new(SpawnTaskTool));
         // 5b. MCP servers — start each server described in config.mcp_servers and
