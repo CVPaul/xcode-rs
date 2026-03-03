@@ -152,3 +152,41 @@ impl AgentIO for AutoApproveIO {
         Ok(true)
     }
 }
+
+// ─── JsonIO ─────────────────────────────────────────────────────────────────
+//
+// Outputs each event as a JSON line to stdout (JSONL / ndjson format).
+// Used with `--json` for machine-readable output.
+
+/// JSON-lines I/O implementation.
+///
+/// Every event is printed as a single-line JSON object to stdout.
+/// `confirm_destructive` auto-approves (same as AutoApproveIO).
+pub struct JsonIO;
+
+#[async_trait]
+impl AgentIO for JsonIO {
+    async fn show_status(&self, msg: &str) -> Result<()> {
+        let j = serde_json::json!({ "event": "status", "msg": msg });
+        println!("{}", j);
+        Ok(())
+    }
+    async fn show_tool_call(&self, tool_name: &str, args_preview: &str) -> Result<()> {
+        let j = serde_json::json!({ "event": "tool_call", "tool": tool_name, "args": args_preview });
+        println!("{}", j);
+        Ok(())
+    }
+    async fn show_tool_result(&self, preview: &str, is_error: bool) -> Result<()> {
+        let j = serde_json::json!({ "event": "tool_result", "preview": preview, "is_error": is_error });
+        println!("{}", j);
+        Ok(())
+    }
+    async fn write_error(&self, msg: &str) -> Result<()> {
+        let j = serde_json::json!({ "event": "error", "msg": msg });
+        println!("{}", j);
+        Ok(())
+    }
+    async fn confirm_destructive(&self, _tool_name: &str, _args_preview: &str) -> Result<bool> {
+        Ok(true)
+    }
+}

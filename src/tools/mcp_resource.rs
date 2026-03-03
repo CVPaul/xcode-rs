@@ -275,6 +275,8 @@ mod tests {
             nesting_depth: 0,
             llm: Arc::new(crate::llm::NullLlmProvider),
             tools: Arc::new(crate::tools::ToolRegistry::new()),
+            permissions: vec![],
+            formatters: std::collections::HashMap::new(),
         };
 
         let result = tool
@@ -308,6 +310,8 @@ mod tests {
             nesting_depth: 0,
             llm: Arc::new(crate::llm::NullLlmProvider),
             tools: Arc::new(crate::tools::ToolRegistry::new()),
+            permissions: vec![],
+            formatters: std::collections::HashMap::new(),
         };
 
         let result = tool

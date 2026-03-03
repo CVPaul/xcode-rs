@@ -62,6 +62,9 @@ struct Cli {
     /// Disable markdown rendering of agent output (show raw text instead of styled)
     #[arg(long, global = false)]
     no_markdown: bool,
+    /// Output results as JSON lines (one JSON object per event)
+    #[arg(long, global = false)]
+    json: bool,
     /// Run a single task non-interactively, then exit. Short for `xcodeai run "prompt"`.
     /// Example: `xcodeai -p "Add error handling to lib.rs"`
     #[arg(long, short = 'P', global = false)]
@@ -98,6 +101,9 @@ enum Commands {
         /// Disable markdown rendering of agent output (show raw text instead of styled)
         #[arg(long)]
         no_markdown: bool,
+        /// Output JSON lines instead of styled terminal output
+        #[arg(long)]
+        json: bool,
     },
     /// Manage sessions
     Session {
@@ -155,8 +161,8 @@ async fn main() -> Result<()> {
                 cli.no_agents_md,
                 cli.compact,
                 cli.no_markdown,
-            )
-            .await?;
+                cli.json,
+            ).await?;
         }
         None => {
             repl::repl_command(
@@ -182,6 +188,7 @@ async fn main() -> Result<()> {
             no_agents_md,
             compact,
             no_markdown,
+            json,
         }) => {
             run_command(
                 message,
@@ -193,6 +200,7 @@ async fn main() -> Result<()> {
                 no_agents_md,
                 compact,
                 no_markdown,
+                json,
             )
             .await?;
         }
@@ -225,6 +233,8 @@ async fn run_command(
     // NOTE: run_command uses AutoApproveIO (non-interactive), so no_markdown
     // doesn't affect output here — it's accepted for CLI symmetry with REPL mode.
     #[allow(unused_variables)] no_markdown: bool,
+    // When true, output JSON lines to stdout instead of styled terminal output.
+    json: bool,
 ) -> Result<()> {
     use agent::director::Director;
     use agent::Agent;
@@ -234,6 +244,11 @@ async fn run_command(
     // We use AutoApproveIO rather than TerminalIO so that the agent never blocks
     // waiting for stdin confirmation — there is no human present to answer.
     // All tool output is still printed to stderr (same as TerminalIO).
+    let io_impl: std::sync::Arc<dyn io::AgentIO> = if json {
+        std::sync::Arc::new(io::JsonIO)
+    } else {
+        std::sync::Arc::new(io::AutoApproveIO)
+    };
     let ctx = AgentContext::new(
         project,
         no_sandbox,
@@ -241,7 +256,7 @@ async fn run_command(
         provider_url,
         api_key,
         compact,
-        std::sync::Arc::new(io::AutoApproveIO),
+        io_impl,
     )
     .await?;
 

@@ -141,6 +141,8 @@ mod tests {
             nesting_depth: 0,
             llm: Arc::new(NullLlmProvider),
             tools: Arc::new(ToolRegistry::new()),
+            permissions: vec![],
+            formatters: std::collections::HashMap::new(),
         }
     }
 

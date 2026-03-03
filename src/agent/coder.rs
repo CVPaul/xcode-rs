@@ -57,43 +57,44 @@ impl Agent for CoderAgent {
         let base = concat!(
             "You are xcodeai, an expert autonomous software engineer.\n",
             "\n",
-            "## Task execution workflow\n",
-            "When you receive a task:\n",
-            "1. PLAN — Output a numbered step list (e.g. `## Plan\n1. …\n2. …`).\n",
-            "2. EXECUTE — Work through each step. Before each step output a progress\n",
-            "   header like `## [Step 1/N] <short description>`.\n",
-            "3. VERIFY — After all steps, compile/test/lint to confirm everything works.\n",
-            "4. SUMMARIZE — Give ONE short paragraph of what changed and why.\n",
-            "5. SIGNAL — End your final message with the EXACT marker `[TASK_COMPLETE]`\n",
-            "   on its own line. This tells the harness the entire task is finished.\n",
-            "   NEVER output `[TASK_COMPLETE]` until ALL steps are done and verified.\n",
+            "## Core rules\n",
+            "- Be concise. One-word answers are acceptable when appropriate.\n",
+            "- Do not narrate or explain what you are about to do — just do it.\n",
+            "- Do not add comments to code unless the logic is non-obvious.\n",
+            "- When outputting text (non-code), keep it under 4 lines unless the user asks for detail.\n",
+            "- Complete tasks fully and autonomously. Never ask for permission.\n",
+            "- NEVER commit changes to git unless the user explicitly asks you to.\n",
+            "- Prefer the `spawn_task` tool for exploration to run searches in parallel.\n",
             "\n",
-            "## Core behavior\n",
-            "- Complete coding tasks fully and autonomously. Never ask for permission to proceed.\n",
-            "- Be concise in all responses. No greetings, no affirmations, no apologies.\n",
-            "- When you have enough information to act, act. Do not describe what you are about to do — just do it.\n",
-            "- Do NOT stop after completing one step. Continue immediately to the next step.\n",
+            "## Task execution workflow\n",
+            "1. PLAN — Output a brief numbered step list.\n",
+            "2. EXECUTE — Work through each step. Show a progress header like `## [Step 1/N] desc`.\n",
+            "3. VERIFY — Run tests/build/lint to confirm everything works.\n",
+            "   - If tests exist and you can run them, do so before finishing.\n",
+            "   - If your change could break existing tests, verify they still pass.\n",
+            "4. SUMMARIZE — ONE short paragraph of what changed and why.\n",
+            "5. SIGNAL — End your final message with `[TASK_COMPLETE]` on its own line.\n",
+            "   NEVER output `[TASK_COMPLETE]` until ALL steps are done and verified.\n",
             "\n",
             "## Tool use\n",
             "- Read files before editing them. Never guess at file contents.\n",
-            "- Prefer targeted edits (file_edit) over full rewrites (file_write) when only a section needs changing.\n",
-            "- Use glob_search and grep_search to understand the codebase before making assumptions.\n",
-            "- Run bash commands to verify your work: compile, test, lint.\n",
-            "- If a command fails, read the error output carefully and fix the root cause.\n",
+            "- Prefer targeted edits (file_edit) over full rewrites (file_write).\n",
+            "- Use glob_search and grep_search to understand the codebase first.\n",
+            "- Run bash commands to verify: compile, test, lint.\n",
+            "- If a command fails, read the error carefully and fix the root cause.\n",
             "\n",
             "## Code quality\n",
-            "- Match the style, indentation, and conventions already present in the file.\n",
+            "- Match the existing style, indentation, and conventions.\n",
             "- Do not introduce new dependencies unless explicitly requested.\n",
             "- Write idiomatic code for the language in use.\n",
-            "- Add comments only where the logic is non-obvious — do not narrate obvious steps.\n",
             "\n",
             "## What NOT to do\n",
-            "- Do not produce placeholder code with TODO comments unless instructed.\n",
-            "- Do not ask clarifying questions during execution — make a reasonable decision and proceed.\n",
-            "- If you truly cannot proceed without critical missing information, use the `question` tool to ask ONE concise question with selectable options. Do not list multiple questions. Wait for the answer before asking anything else. Set `multiple: true` when the user could want more than one option (features, files, etc.); use single-select for mutually exclusive choices.\n",
+            "- Do not produce placeholder code with TODO comments.\n",
+            "- Do not ask clarifying questions during execution — decide and proceed.\n",
+            "- If you truly need input, use the `question` tool with ONE concise question. Set `multiple: true` when the user could want more than one option.\n",
             "- Do not repeat the user's instructions back to them.\n",
             "- Do not explain what a tool does — just use it.\n",
-            "- NEVER output `[TASK_COMPLETE]` prematurely. Only use it after ALL steps are done and verified.\n"
+            "- NEVER output `[TASK_COMPLETE]` prematurely.\n"
         );
 
         // If project rules were loaded from an AGENTS.md file, prepend them
@@ -263,6 +264,37 @@ impl Agent for CoderAgent {
                     .show_tool_call(&tool_call.function.name, &args_preview)
                     .await
                     .ok();
+
+                // ── Config-level permission rules ─────────────────────────────────
+                // Check if any PermissionRule in ctx.permissions matches this tool
+                // and requires confirmation. Simple glob: exact match or "prefix*".
+                let needs_config_permission = ctx.permissions.iter().any(|rule| {
+                    if !rule.confirm { return false; }
+                    if rule.tool == tool_call.function.name { return true; }
+                    if rule.tool.ends_with('*') {
+                        let prefix = &rule.tool[..rule.tool.len() - 1];
+                        tool_call.function.name.starts_with(prefix)
+                    } else {
+                        false
+                    }
+                });
+                if needs_config_permission
+                    && !ctx
+                        .io
+                        .confirm_destructive(&tool_call.function.name, &args_preview)
+                        .await
+                        .unwrap_or(false)
+                {
+                    ctx.io
+                        .show_tool_result("skipped (denied by permission rule)", true)
+                        .await
+                        .ok();
+                    messages.push(Message::tool(
+                        tool_call.id.clone(),
+                        "Tool call was denied by a permission rule in config. Do not retry. Ask the user how to proceed.".to_string(),
+                    ));
+                    continue;
+                }
 
                 // ── Destructive tool call confirmation ─────────────────────────────────
                 // Previously this checked `ctx.confirm_destructive` (a bool).  Now
@@ -568,12 +600,16 @@ pub async fn run_plan_turn(
 
     // Build tool definitions — in Plan mode we only expose the `question` tool
     // so the LLM can ask the user structured questions but cannot modify files.
+    let plan_tool_allowlist: &[&str] = &[
+        "question", "file_read", "glob_search", "grep_search",
+        "ls", "git_log", "git_diff", "git_blame", "fetch", "code_search",
+    ];
     let question_tool_defs: Vec<ToolDefinition> = tools
         .list_definitions()
         .into_iter()
         .filter_map(|v| {
-            // Only include the "question" tool in Plan mode
-            if v["function"]["name"].as_str() == Some("question") {
+            let name = v["function"]["name"].as_str().unwrap_or("");
+            if plan_tool_allowlist.contains(&name) {
                 serde_json::from_value(v).ok()
             } else {
                 None
@@ -740,6 +776,8 @@ mod tests {
             nesting_depth: 0,
             llm: std::sync::Arc::new(crate::llm::NullLlmProvider),
             tools: std::sync::Arc::new(crate::tools::ToolRegistry::new()),
+            permissions: vec![],
+            formatters: std::collections::HashMap::new(),
         }
     }
 

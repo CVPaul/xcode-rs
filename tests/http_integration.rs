@@ -82,6 +82,9 @@ fn make_test_state(mock_addr: SocketAddr) -> Arc<xcodeai::http::AppState> {
         },
         lsp: Default::default(),
         mcp_servers: vec![],
+        custom_tools: vec![],
+        permissions: vec![],
+        formatters: std::collections::HashMap::new(),
     };
 
     // In-memory SQLite so tests don't touch the real DB.

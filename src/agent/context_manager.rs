@@ -176,7 +176,7 @@ impl ContextManager {
     ///   4. Replace the middle messages with a single `[Context Summary]` user message.
     ///
     /// Returns an error if the LLM call fails (caller falls back to truncation).
-    async fn try_summarize(
+    pub async fn try_summarize(
         &self,
         messages: &mut Vec<Message>,
         llm: &dyn LlmProvider,

@@ -171,11 +171,12 @@ impl InputHistory {
 pub fn readline_with_suggestions(
     prompt: &str,
     history: &mut InputHistory,
+    working_dir: Option<&std::path::Path>,
 ) -> io::Result<ReadResult> {
     // ── Enter raw mode ────────────────────────────────────────────────────────
     terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-
+    let mut stdout = std::io::stdout();
+    let mut file_cache: Option<Vec<String>> = None;
     // Print the prompt (it contains ANSI colour codes from `console::style`).
     // We use `print!` + `flush` rather than crossterm's Print so that the
     // `console` crate's escape sequences go through unmolested.
@@ -185,7 +186,7 @@ pub fn readline_with_suggestions(
     // ── State ─────────────────────────────────────────────────────────────────
     let mut buf: Vec<char> = Vec::new(); // the characters the user has typed
     let mut cursor_pos: usize = 0; // insertion point (0 = before first char)
-    let mut suggestions: Vec<&'static str> = Vec::new(); // current /command matches
+    let mut suggestions: Vec<String> = Vec::new(); // current /command or file matches
     let mut selected: usize = 0; // which suggestion is highlighted
     let mut prev_sug_count: usize = 0; // how many suggestion lines were rendered last time
 
@@ -206,7 +207,7 @@ pub fn readline_with_suggestions(
             (KeyCode::Enter, _) => {
                 // If a suggestion is highlighted, complete it first.
                 if !suggestions.is_empty() {
-                    let chosen = suggestions[selected];
+                    let chosen = suggestions[selected].clone();
                     // Replace buffer with completed command + trailing space.
                     buf = format!("{} ", chosen).chars().collect();
                     cursor_pos = buf.len();
@@ -215,7 +216,7 @@ pub fn readline_with_suggestions(
                     // If the command takes no arguments, submit immediately.
                     // Commands that take args (e.g. /model, /undo N) get a
                     // trailing space so the user can type the argument.
-                    let no_args = !matches!(chosen, "/undo");
+                    let no_args = chosen != "/undo";
                     if no_args {
                         // Erase the suggestion lines BEFORE moving to the next line.
                         erase_suggestions(&mut stdout, prev_sug_count)?;
@@ -254,7 +255,7 @@ pub fn readline_with_suggestions(
                 // Non-empty: delete char under cursor (like normal Ctrl-D).
                 if cursor_pos < buf.len() {
                     buf.remove(cursor_pos);
-                    update_suggestions(&buf, &mut suggestions, &mut selected);
+                    update_suggestions(&buf, &mut suggestions, &mut selected, working_dir, &mut file_cache);
                     prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                 }
             }
@@ -275,7 +276,7 @@ pub fn readline_with_suggestions(
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
                 buf.clear();
                 cursor_pos = 0;
-                update_suggestions(&buf, &mut suggestions, &mut selected);
+                update_suggestions(&buf, &mut suggestions, &mut selected, working_dir, &mut file_cache);
                 prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
             }
 
@@ -290,7 +291,7 @@ pub fn readline_with_suggestions(
                     cursor_pos -= 1;
                     buf.remove(cursor_pos);
                 }
-                update_suggestions(&buf, &mut suggestions, &mut selected);
+                update_suggestions(&buf, &mut suggestions, &mut selected, working_dir, &mut file_cache);
                 prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
             }
 
@@ -338,7 +339,7 @@ pub fn readline_with_suggestions(
                     if let Some(entry) = history.up(&current) {
                         buf = entry.chars().collect();
                         cursor_pos = buf.len();
-                        update_suggestions(&buf, &mut suggestions, &mut selected);
+                        update_suggestions(&buf, &mut suggestions, &mut selected, working_dir, &mut file_cache);
                     prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                     }
                 }
@@ -359,7 +360,7 @@ pub fn readline_with_suggestions(
                     if let Some(entry) = history.down() {
                         buf = entry.chars().collect();
                         cursor_pos = buf.len();
-                        update_suggestions(&buf, &mut suggestions, &mut selected);
+                        update_suggestions(&buf, &mut suggestions, &mut selected, working_dir, &mut file_cache);
                     prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                     }
                 }
@@ -368,7 +369,7 @@ pub fn readline_with_suggestions(
             // ── Tab: complete the selected suggestion ─────────────────────────
             (KeyCode::Tab, _) => {
                 if !suggestions.is_empty() {
-                    let chosen = suggestions[selected];
+                    let chosen = suggestions[selected].clone();
                     buf = format!("{} ", chosen).chars().collect();
                     cursor_pos = buf.len();
                     suggestions.clear();
@@ -396,7 +397,7 @@ pub fn readline_with_suggestions(
                 if cursor_pos > 0 {
                     cursor_pos -= 1;
                     buf.remove(cursor_pos);
-                    update_suggestions(&buf, &mut suggestions, &mut selected);
+                    update_suggestions(&buf, &mut suggestions, &mut selected, working_dir, &mut file_cache);
                     prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                 }
             }
@@ -405,7 +406,7 @@ pub fn readline_with_suggestions(
             (KeyCode::Delete, _) => {
                 if cursor_pos < buf.len() {
                     buf.remove(cursor_pos);
-                    update_suggestions(&buf, &mut suggestions, &mut selected);
+                    update_suggestions(&buf, &mut suggestions, &mut selected, working_dir, &mut file_cache);
                     prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
                 }
             }
@@ -416,7 +417,7 @@ pub fn readline_with_suggestions(
             {
                 buf.insert(cursor_pos, ch);
                 cursor_pos += 1;
-                update_suggestions(&buf, &mut suggestions, &mut selected);
+                update_suggestions(&buf, &mut suggestions, &mut selected, working_dir, &mut file_cache);
                 prev_sug_count = redraw_line(&mut stdout, prompt, &buf, cursor_pos, &suggestions, selected, prev_sug_count)?;
             }
 
@@ -434,16 +435,14 @@ pub fn readline_with_suggestions(
 
 /// Recompute which commands match the current buffer.
 /// Called after every character insertion/deletion.
-fn update_suggestions(buf: &[char], suggestions: &mut Vec<&'static str>, selected: &mut usize) {
+fn update_suggestions(buf: &[char], suggestions: &mut Vec<String>, selected: &mut usize, working_dir: Option<&std::path::Path>, file_cache: &mut Option<Vec<String>>) {
     let line: String = buf.iter().collect();
     if line.starts_with('/') {
-        // Keep the '/' prefix in the match so "/he" matches "/help".
-        let new_sug: Vec<&'static str> = COMMANDS
+        let new_sug: Vec<String> = COMMANDS
             .iter()
             .filter(|c| c.cmd.starts_with(line.as_str()))
-            .map(|c| c.cmd)
+            .map(|c| c.cmd.to_string())
             .collect();
-        // Try to keep the currently-selected item selected.
         if !new_sug.is_empty() {
             if *selected >= new_sug.len() {
                 *selected = 0;
@@ -452,12 +451,54 @@ fn update_suggestions(buf: &[char], suggestions: &mut Vec<&'static str>, selecte
             *selected = 0;
         }
         *suggestions = new_sug;
+    } else if let Some(at_idx) = line.rfind('@') {
+        let partial = &line[at_idx+1..];
+        // If file_cache is empty, walk the directory and cache results
+        if let (None, Some(wd)) = (file_cache.as_ref(), working_dir) {
+            let mut files = Vec::new();
+            fn walk(root: &std::path::Path, dir: &std::path::Path, depth: usize, files: &mut Vec<String>) {
+                if depth > 4 || files.len() >= 100 { return; }
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let fname = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+                        if fname.starts_with('.') { continue; }
+                        if fname == "target" || fname == "node_modules" || fname == ".git" { continue; }
+                        if path.is_dir() {
+                            walk(root, &path, depth+1, files);
+                        } else if let Ok(rel) = path.strip_prefix(root) {
+                            if let Some(rel_str) = rel.to_str() {
+                                files.push(rel_str.replace("\\", "/"));
+                            }
+                        }
+                        if files.len() >= 100 { break; }
+                    }
+                }
+            }
+            walk(wd, wd, 0, &mut files);
+            *file_cache = Some(files);
+        }
+        // Filter from cache
+        let filtered = file_cache.as_ref().map(|cache| {
+            cache.iter()
+                .filter(|f| f.to_lowercase().contains(&partial.to_lowercase()))
+                .take(10)
+                .cloned()
+                .collect::<Vec<String>>()
+        }).unwrap_or_default();
+        if !filtered.is_empty() {
+            if *selected >= filtered.len() {
+                *selected = 0;
+            }
+        } else {
+            *selected = 0;
+        }
+        *suggestions = filtered;
     } else {
         suggestions.clear();
         *selected = 0;
     }
 }
-
 // ── Terminal rendering ────────────────────────────────────────────────────────
 
 /// Erase `count` suggestion lines below the input line, then move the cursor
@@ -493,7 +534,7 @@ fn redraw_line(
     prompt: &str,
     buf: &[char],
     cursor_pos: usize,
-    suggestions: &[&str],
+    suggestions: &[String],
     selected: usize,
     prev_sug_count: usize,
 ) -> io::Result<usize> {
@@ -522,18 +563,22 @@ fn redraw_line(
         // Compute the longest command name for alignment.
         let max_cmd_len = suggestions.iter().map(|s| s.len()).max().unwrap_or(0);
 
-        for (i, &cmd) in suggestions.iter().enumerate() {
+        for (i, cmd) in suggestions.iter().enumerate() {
             // Move to the next line, go to column 0, clear it.
             stdout
                 .queue(Print("\r\n"))?
                 .queue(terminal::Clear(ClearType::CurrentLine))?;
 
-            // Find the description for this command.
-            let desc = COMMANDS
-                .iter()
-                .find(|c| c.cmd == cmd)
-                .map(|c| c.desc)
-                .unwrap_or("");
+            // If this is a file suggestion (not a command), no description.
+            let desc = if cmd.starts_with('/') {
+                COMMANDS
+                    .iter()
+                    .find(|c| c.cmd == cmd)
+                    .map(|c| c.desc)
+                    .unwrap_or("")
+            } else {
+                ""
+            };
 
             if i == selected {
                 // Highlighted row: white text.

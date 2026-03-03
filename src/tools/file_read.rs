@@ -127,6 +127,8 @@ mod tests {
             nesting_depth: 0,
             llm: std::sync::Arc::new(crate::llm::NullLlmProvider),
             tools: std::sync::Arc::new(crate::tools::ToolRegistry::new()),
+            permissions: vec![],
+            formatters: std::collections::HashMap::new(),
         }
     }
     #[tokio::test]

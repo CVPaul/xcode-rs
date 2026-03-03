@@ -75,6 +75,18 @@ impl Tool for FileWriteTool {
             });
         }
 
+        // ── Run formatter if configured for this file extension ──────────
+        if let Some(ext) = std::path::Path::new(&path_str).extension().and_then(|e| e.to_str()) {
+            if let Some(fmt_cmd) = ctx.formatters.get(ext) {
+                let cmd = fmt_cmd.replace("{}", &path.to_string_lossy());
+                let _ = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&cmd)
+                    .current_dir(&ctx.working_dir)
+                    .output();
+            }
+        }
+
         Ok(ToolResult {
             output: format!("Written {} bytes to {}", bytes, path_str),
             is_error: false,
@@ -107,6 +119,8 @@ mod tests {
             nesting_depth: 0,
             llm: std::sync::Arc::new(crate::llm::NullLlmProvider),
             tools: std::sync::Arc::new(crate::tools::ToolRegistry::new()),
+            permissions: vec![],
+            formatters: std::collections::HashMap::new(),
         }
     }
     #[tokio::test]

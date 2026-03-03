@@ -26,6 +26,8 @@ use crate::tools::patch::PatchTool;
 use crate::tools::fetch::FetchTool;
 use crate::tools::ls::ListDirectoryTool;
 use crate::tools::display_image::DisplayImageTool;
+use crate::tools::code_search::CodeSearchTool;
+use crate::tools::custom_tool::CustomTool;
 use crate::tools::{ToolContext, ToolRegistry};
 use anyhow::Result;
 use console::style;
@@ -115,6 +117,21 @@ impl AgentContext {
         registry.register(Box::new(FetchTool));
         registry.register(Box::new(PatchTool));
         registry.register(Box::new(DisplayImageTool));
+        registry.register(Box::new(CodeSearchTool));
+        // 5a. Custom tools — register user-defined tools from config.custom_tools.
+        for ct in &config.custom_tools {
+            if ct.name.is_empty() || ct.command.is_empty() {
+                tracing::warn!("Skipping custom tool with empty name or command");
+                continue;
+            }
+            registry.register(Box::new(CustomTool {
+                tool_name: ct.name.clone(),
+                tool_description: ct.description.clone(),
+                command_template: ct.command.clone(),
+                tool_parameters: ct.parameters.clone(),
+            }));
+            tracing::info!("Registered custom tool '{}'", ct.name);
+        }
         // ctx.llm and ctx.tools at execute time, so no constructor args needed.
         registry.register(Box::new(SpawnTaskTool));
         // 5b. MCP servers — start each server described in config.mcp_servers and
@@ -210,6 +227,8 @@ impl AgentContext {
             nesting_depth: 0,
             llm: Arc::clone(&llm),
             tools: Arc::clone(&registry),
+            permissions: config.permissions.clone(),
+            formatters: config.formatters.clone(),
         };
 
         Ok(Self {

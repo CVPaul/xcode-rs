@@ -25,6 +25,20 @@ pub struct Config {
     /// the server advertises.  Empty by default — add entries to enable MCP.
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
+    /// User-defined custom tools.  Each entry describes a shell command that
+    /// the LLM can invoke as a tool.  Empty by default.
+    #[serde(default)]
+    pub custom_tools: Vec<CustomToolConfig>,
+    /// Permission rules for tool execution.  Each rule matches a tool name
+    /// pattern and specifies whether that tool requires user confirmation.
+    /// Empty by default (all tools run without confirmation).
+    #[serde(default)]
+    pub permissions: Vec<PermissionRule>,
+    /// Code formatters to run after file_write / file_edit.  Keys are file
+    /// extensions (e.g. "rs", "py"), values are shell commands that receive
+    /// the file path as `{}`.  Example: `{"rs": "rustfmt {}", "py": "black {}"}`.
+    #[serde(default)]
+    pub formatters: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -97,6 +111,9 @@ impl Default for Config {
             },
             lsp: LspConfig::default(),
             mcp_servers: Vec::new(),
+            custom_tools: Vec::new(),
+            permissions: Vec::new(),
+            formatters: std::collections::HashMap::new(),
         }
     }
 }
@@ -170,6 +187,68 @@ pub struct McpServerConfig {
     /// Extra environment variables injected into the subprocess.
     /// Useful for passing secrets (API keys) without embedding them in `command`.
     pub env: std::collections::HashMap<String, String>,
+}
+
+// ─── CustomToolConfig ─────────────────────────────────────────────────────
+
+/// Configuration for a user-defined custom tool.
+///
+/// Each entry in `config.custom_tools` describes a shell command the LLM can
+/// invoke as a tool.  Placeholders like `{{path}}` in `command` are replaced
+/// with the corresponding parameter value from the LLM's tool call.
+///
+/// # Example `config.json` entry
+///
+/// ```json
+/// {
+///   "custom_tools": [
+///     {
+///       "name": "deploy",
+///       "description": "Deploy the application to staging",
+///       "command": "make deploy-staging",
+///       "parameters": {}
+///     }
+///   ]
+/// }
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(default)]
+pub struct CustomToolConfig {
+    /// Tool name as seen by the LLM (e.g. `"deploy"`).
+    pub name: String,
+    /// Human-readable description shown in the tool list.
+    pub description: String,
+    /// Shell command to execute.  May contain `{{param}}` placeholders.
+    pub command: String,
+    /// JSON Schema properties for the tool parameters.  Empty object `{}` means no parameters.
+    pub parameters: serde_json::Value,
+}
+
+// ─── PermissionRule ──────────────────────────────────────────────────────────
+
+/// A permission rule that controls whether a tool requires user confirmation.
+///
+/// When `confirm` is `true`, the tool will prompt before execution even if the
+/// agent is running in auto-approve mode.  Tool names support glob patterns:
+/// `"bash"` matches exactly, `"git_*"` matches all git tools.
+///
+/// # Example
+///
+/// ```json
+/// {
+///   "permissions": [
+///     { "tool": "bash", "confirm": true },
+///     { "tool": "git_*", "confirm": true }
+///   ]
+/// }
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(default)]
+pub struct PermissionRule {
+    /// Tool name or glob pattern (e.g. `"bash"`, `"git_*"`).
+    pub tool: String,
+    /// Whether this tool requires explicit user confirmation before execution.
+    pub confirm: bool,
 }
 
 // ─── LspConfig ──────────────────────────────────────────────────────────────
@@ -348,6 +427,9 @@ mod tests {
             },
             lsp: LspConfig::default(),
             mcp_servers: vec![],
+            custom_tools: vec![],
+            permissions: vec![],
+            formatters: std::collections::HashMap::new(),
         };
 
         let json = serde_json::to_string_pretty(&test_config).unwrap();

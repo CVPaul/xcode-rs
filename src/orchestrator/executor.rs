@@ -517,6 +517,8 @@ mod tests {
             nesting_depth: 0,
             llm: Arc::new(ImmediateCompleteProvider),
             tools: Arc::new(ToolRegistry::new()),
+            permissions: vec![],
+            formatters: std::collections::HashMap::new(),
         }
     }
 

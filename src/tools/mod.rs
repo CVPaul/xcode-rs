@@ -29,6 +29,8 @@ pub mod question;
 pub mod spawn_task;
 pub mod patch;
 pub mod display_image;
+pub mod code_search;
+pub mod custom_tool;
 
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -74,6 +76,12 @@ pub struct ToolContext {
     /// The full tool registry, shared via Arc so spawn_task can give child
     /// agents the same set of tools without re-constructing the registry.
     pub tools: Arc<ToolRegistry>,
+    /// Permission rules from config — used by the agent loop to check whether a
+    /// tool call needs explicit user confirmation.
+    pub permissions: Vec<crate::config::PermissionRule>,
+    /// Code formatters keyed by file extension.  After file_write/file_edit
+    /// succeeds, the tool checks this map and runs the formatter if one matches.
+    pub formatters: std::collections::HashMap<String, String>,
 }
 
 pub struct ToolResult {

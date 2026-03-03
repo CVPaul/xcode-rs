@@ -377,6 +377,8 @@ mod tests {
             nesting_depth: 0,
             llm,
             tools,
+            permissions: vec![],
+            formatters: std::collections::HashMap::new(),
         }
     }
 

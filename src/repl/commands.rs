@@ -67,7 +67,15 @@ pub const COMMANDS: &[CommandDef] = &[
     },
     CommandDef {
         cmd: "/compact",
-        desc: "Toggle compact mode (shorter output, brevity-focused prompt)",
+        desc: "Summarise context + toggle compact mode",
+    },
+    CommandDef {
+        cmd: "/init",
+        desc: "Generate AGENTS.md project rules via LLM analysis",
+    },
+    CommandDef {
+        cmd: "/redo",
+        desc: "Re-send the last user message",
     },
     CommandDef {
         cmd: "/help",
@@ -117,10 +125,21 @@ pub struct ReplState<'a> {
     /// Session-level token tracker (accumulates across multiple task runs).
     /// Passed by reference so /tokens can display cumulative stats.
     pub session_tracker: &'a crate::tracking::SessionTracker,
+    /// Last user message — used by /redo to re-send.
+    pub last_user_message: &'a mut Option<String>,
 }
 
-/// Dispatcher for slash-commands. Returns Some(ReplMode) if mode changes, None otherwise.
-pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Option<ReplMode>> {
+/// What the REPL loop should do after a command finishes.
+pub enum CommandAction {
+    /// Nothing special — continue the REPL loop.
+    Continue,
+    /// Re-inject this text as if the user typed it (used by /redo).
+    InjectLine(String),
+}
+
+/// Dispatcher for slash-commands.
+pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<CommandAction> {
+
     // Access state fields directly via state.field (avoids double-mut-ref issues from destructuring)
     match cmd {
         "/exit" | "/quit" | "/q" => std::process::exit(0),
@@ -134,7 +153,7 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
                     .yellow(),
             );
             println!();
-            Ok(Some(ReplMode::Plan))
+            Ok(CommandAction::Continue)
         }
         "/act" => {
             *state.mode = ReplMode::Act;
@@ -145,7 +164,7 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
                 style("Switched to Act mode — ready to execute.").cyan(),
             );
             println!();
-            Ok(Some(ReplMode::Act))
+            Ok(CommandAction::Continue)
         }
         // /undo              — pop one entry and restore git working tree
         // /undo list        — show the full undo history
@@ -219,13 +238,13 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
                     warn("       /undo N            — undo last N runs");
                 }
             }
-            Ok(None)
+            Ok(CommandAction::Continue)
         }
         "/tokens" => {
             // Display the cumulative token usage for this REPL session.
             let report = state.session_tracker.detailed_report();
             print!("{}", report);
-            Ok(None)
+            Ok(CommandAction::Continue)
         }
         "/session" => {
             match crate::repl::session_picker(&state.ctx.store) {
@@ -279,7 +298,7 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
                 }
                 SessionPickResult::Cancelled => {}
             }
-            Ok(None)
+            Ok(CommandAction::Continue)
         }
         "/clear" => {
             ok(&format!("Session saved: {}", style(&state.sess.id).dim()));
@@ -293,7 +312,7 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
                 "New session started: {}",
                 style(&state.sess.id).cyan()
             ));
-            Ok(None)
+            Ok(CommandAction::Continue)
         }
         "/help" => {
             println!();
@@ -309,7 +328,7 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
                 println!("  {}  {}", cyan.apply_to(cmd.cmd), dim.apply_to(cmd.desc));
             }
             println!();
-            Ok(None)
+            Ok(CommandAction::Continue)
         }
         cmd if cmd.starts_with("/login") => {
             info("Starting GitHub Copilot device authorization…");
@@ -331,14 +350,14 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
                 },
                 Err(e) => err(&format!("Login failed: {:#}", e)),
             }
-            Ok(None)
+            Ok(CommandAction::Continue)
         }
         "/logout" => {
             match auth::CopilotOAuthToken::delete() {
                 Ok(_) => ok("Logged out of GitHub Copilot."),
                 Err(e) => err(&format!("Logout failed: {:#}", e)),
             }
-            Ok(None)
+            Ok(CommandAction::Continue)
         }
         "/connect" => {
             if let Some((new_base, new_key)) = crate::repl::connect_menu() {
@@ -376,7 +395,7 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
                     }
                 }
             }
-            Ok(None)
+            Ok(CommandAction::Continue)
         }
         cmd if cmd.starts_with("/model") => {
             let rest = cmd[6..].trim();
@@ -488,7 +507,7 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
                     style(&new_model).green()
                 ));
             }
-            Ok(None)
+            Ok(CommandAction::Continue)
         }
         // Show all connected MCP servers and the tools each one provides.
         // This is purely informational — it doesn’t change any state.
@@ -533,12 +552,10 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
                 }
                 println!();
             }
-            Ok(None)
+            Ok(CommandAction::Continue)
         }
-        // Toggle compact mode on/off for the current session.
-        // Compact mode caps file_read output to 50 lines and adds a
-        // brevity instruction to the system prompt.
         "/compact" => {
+            // Toggle compact mode
             state.ctx.config.agent.compact_mode = !state.ctx.config.agent.compact_mode;
             state.ctx.tool_ctx.compact_mode = state.ctx.config.agent.compact_mode;
             if state.ctx.config.agent.compact_mode {
@@ -546,7 +563,80 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
             } else {
                 ok("Compact mode OFF — full output restored.");
             }
-            Ok(None)
+            // Also run context summarization on current act messages
+            if state.act_messages.len() > 4 {
+                info("Summarising conversation context...");
+                let ctx_mgr = crate::agent::context_manager::ContextManager::new(
+                    state.ctx.config.agent.context.clone(),
+                );
+                match ctx_mgr.try_summarize(state.act_messages, state.ctx.llm.as_ref()).await {
+                    Ok(()) => ok("Context summarised."),
+                    Err(e) => warn(&format!("Summarisation failed: {:#}", e)),
+                }
+            }
+            Ok(CommandAction::Continue)
+        }
+        // /init — generate AGENTS.md by sending the project to the LLM for analysis
+        "/init" => {
+            let agents_md_path = state.ctx.project_dir.join("AGENTS.md");
+            if agents_md_path.exists() {
+                use dialoguer::{theme::ColorfulTheme, Confirm};
+                let overwrite = Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt("AGENTS.md already exists. Overwrite?")
+                    .default(false)
+                    .interact_opt()
+                    .unwrap_or(None)
+                    .unwrap_or(false);
+                if !overwrite {
+                    info("Cancelled.");
+                    return Ok(CommandAction::Continue);
+                }
+            }
+            info("Analyzing project to generate AGENTS.md...");
+            let init_prompt = format!(
+                "Analyze the codebase in the current working directory and create an AGENTS.md file. \
+                 The file should contain:\n\
+                 1. A brief project overview (1-2 sentences)\n\
+                 2. Build commands (build, test, lint, format, single-test)\n\
+                 3. Code style guidelines observed in the codebase\n\
+                 4. Key architectural patterns\n\
+                 5. Important conventions and rules\n\n\
+                 Keep it under 150 lines. Be specific to THIS project — not generic advice. \
+                 Write the file to: {}\n\
+                 If you find existing Cursor rules (.cursorrules) or Copilot instructions (.github/copilot-instructions.md), incorporate them.",
+                agents_md_path.display()
+            );
+            // Run this as a one-shot agent task via Director
+            let mut task_messages = vec![
+                crate::llm::Message::system(state.coder_system_prompt),
+                crate::llm::Message::user(&init_prompt),
+            ];
+            let director = crate::agent::director::Director::new(state.ctx.config.agent.clone());
+            println!();
+            match director.execute(
+                &mut task_messages,
+                state.ctx.registry.as_ref(),
+                state.ctx.llm.as_ref(),
+                &state.ctx.tool_ctx,
+            ).await {
+                Ok(_) => ok("AGENTS.md generated. It will be loaded on next startup."),
+                Err(e) => err(&format!("Failed to generate AGENTS.md: {:#}", e)),
+            }
+            crate::ui::print_separator("");
+            Ok(CommandAction::Continue)
+        }
+        // /redo — re-send the last user message
+        "/redo" => {
+            match state.last_user_message.clone() {
+                Some(msg) => {
+                    info(&format!("Re-sending: {}", &msg.chars().take(80).collect::<String>()));
+                    Ok(CommandAction::InjectLine(msg))
+                }
+                None => {
+                    warn("No previous message to re-send.");
+                    Ok(CommandAction::Continue)
+                }
+            }
         }
         // Unknown /xxx command or bare / → show command menu
         cmd if cmd == "/"
@@ -555,18 +645,20 @@ pub async fn handle_command(cmd: &str, state: &mut ReplState<'_>) -> Result<Opti
                 && !cmd.starts_with("/login")
                 && !cmd.starts_with("/compact")
                 && !cmd.starts_with("/mcp")
-                && !cmd.starts_with("/undo")) =>
+                && !cmd.starts_with("/undo")
+                && !cmd.starts_with("/init")
+                && !cmd.starts_with("/redo")) =>
         {
             if let Some(chosen) = show_command_menu() {
                 state.history.push(&chosen);
                 // Buffer the chosen command so the top of the loop processes it exactly like direct user input
                 // This will be handled in the main REPL loop.
             }
-            Ok(None)
+            Ok(CommandAction::Continue)
         }
         // Plain-text exit words
         "exit" | "quit" | "q" | "bye" | "bye!" | "exit!" | "quit!" => std::process::exit(0),
-        _ => Ok(None), // Not a slash-command
+        _ => Ok(CommandAction::Continue), // Not a slash-command
     }
 }
 

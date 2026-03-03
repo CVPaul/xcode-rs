@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 pub mod commands;
 pub mod input;
-use commands::{handle_command, ReplState};
+use commands::{handle_command, CommandAction, ReplState};
 
 // SlashHelper and rustyline editor removed — superseded by crossterm readline.
 #[derive(Clone, Copy, PartialEq)]
@@ -312,6 +312,7 @@ pub async fn repl_command(
         CoderAgent::new_with_agents_md(ctx.config.agent.clone(), agents_md).system_prompt()
     };
     let mut act_messages: Vec<llm::Message> = vec![llm::Message::system(&coder_system_prompt)];
+    let mut last_user_message: Option<String> = None;
 
     // ── Undo stack ────────────────────────────────────────────────────────────
     // The undo history is persisted in the SQLite DB (undo_history table).
@@ -374,7 +375,7 @@ pub async fn repl_command(
         let line = if let Some(p) = pending_line.take() {
             p
         } else {
-            match input::readline_with_suggestions(&prompt, &mut history)
+            match input::readline_with_suggestions(&prompt, &mut history, Some(&ctx.project_dir))
                 .map_err(anyhow::Error::from)?
             {
                 ReadResult::Line(raw) => {
@@ -416,6 +417,8 @@ pub async fn repl_command(
                     && !line.starts_with("/model")
                     && !line.starts_with("/login")
                     && !line.starts_with("/undo")
+                    && !line.starts_with("/init")
+                    && !line.starts_with("/redo")
                     && !matches!(
                         line.as_str(),
                         "/plan"
@@ -424,6 +427,7 @@ pub async fn repl_command(
                             | "/session"
                             | "/connect"
                             | "/clear"
+                            | "/compact"
                             | "/help"
                             | "/logout"
                             | "/exit"
@@ -442,7 +446,7 @@ pub async fn repl_command(
             // Rust doesn't see simultaneous mutable (&mut sess) and
             // immutable (&sess.id) borrows of the same binding.
             let sess_id = sess.id.clone();
-            handle_command(
+            let action = handle_command(
                 &line,
                 &mut ReplState {
                     mode: &mut mode,
@@ -454,9 +458,13 @@ pub async fn repl_command(
                     coder_system_prompt: &coder_system_prompt,
                     session_id: &sess_id,
                     session_tracker: &session_tracker,
+                    last_user_message: &mut last_user_message,
                 },
             )
             .await?;
+            if let CommandAction::InjectLine(msg) = action {
+                pending_line = Some(msg);
+            }
             continue;
         }
         // ── Lazy auth guard ────────────────────────────────────────
@@ -483,6 +491,7 @@ pub async fn repl_command(
             ReplMode::Act => {
                 // Append the user message to Act-mode history before calling the agent.
                 act_messages.push(llm::Message::user(&line));
+                last_user_message = Some(line.clone());
 
                 // ── Pre-run git stash (enables /undo) ────────────────
                 // Use a unique UUID-based label so we can identify this
