@@ -20,6 +20,7 @@ use context::{session_list_command, session_show_command, AgentContext};
 use std::path::PathBuf;
 
 mod http;
+mod spinner;
 mod ui;
 use ui::{err, info, ok, print_separator};
 

@@ -26,3 +26,4 @@ pub mod session;
 pub mod tools;
 pub mod tracking;
 pub mod ui;
+pub mod spinner;

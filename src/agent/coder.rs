@@ -4,6 +4,7 @@ use crate::config::AgentConfig;
 use crate::llm::{LlmProvider, Message, ToolDefinition};
 use crate::tools::{ToolContext, ToolRegistry};
 use crate::tracking::SessionTracker;
+use crate::spinner::Spinner;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -143,7 +144,10 @@ impl Agent for CoderAgent {
         const ABSOLUTE_MAX_ITERATIONS: u32 = 200;
         loop {
             context_mgr.manage(messages, llm).await?;
-            let response = llm.chat_completion(messages, &tool_defs).await?;
+            let spinner = Spinner::start("thinking…");
+            let response = llm.chat_completion(messages, &tool_defs).await;
+            spinner.stop();
+            let response = response?;
             tracker.record(response.usage.as_ref());
 
             // ── No tool calls → the LLM returned text only ──────────────────
@@ -289,7 +293,10 @@ impl Agent for CoderAgent {
                 }
 
                 let result = if let Some(tool) = tools.get(&tool_call.function.name) {
-                    match tool.execute(args, ctx).await {
+                    let spinner = Spinner::start(format!("running {}…", tool_call.function.name));
+                    let exec_result = tool.execute(args, ctx).await;
+                    spinner.stop();
+                    match exec_result {
                         Ok(r) => r,
                         Err(e) => crate::tools::ToolResult {
                             output: format!("Tool execution error: {}", e),
@@ -580,9 +587,12 @@ pub async fn run_plan_turn(
     let mut rounds = 0u32;
 
     loop {
+        let spinner = Spinner::start("planning…");
         let response = llm
             .chat_completion(&plan_messages, &question_tool_defs)
-            .await?;
+            .await;
+        spinner.stop();
+        let response = response?;
 
         // Check if the LLM made any tool calls (i.e. wants to ask a question).
         let has_tool_calls = response
