@@ -737,6 +737,10 @@ async fn fetch_models(api_base: &str, api_key: &str) -> Result<Vec<String>> {
     }
 
     #[derive(Deserialize)]
+    struct CopilotModelsResponse {
+        data: Vec<CopilotModelEntry>,
+    }
+    #[derive(Deserialize)]
     struct CopilotModelEntry {
         id: String,
     }
@@ -766,8 +770,8 @@ async fn fetch_models(api_base: &str, api_key: &str) -> Result<Vec<String>> {
             .send()
             .await?
             .error_for_status()?;
-        let entries: Vec<CopilotModelEntry> = resp.json().await?;
-        let mut models: Vec<String> = entries.into_iter().map(|e| e.id).collect();
+        let body: CopilotModelsResponse = resp.json().await?;
+        let mut models: Vec<String> = body.data.into_iter().map(|e| e.id).collect();
         models.sort();
         Ok(models)
     } else if is_anthropic {
