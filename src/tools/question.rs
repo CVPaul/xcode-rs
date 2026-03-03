@@ -52,6 +52,10 @@ impl Tool for QuestionTool {
          \"Other\" or catch-all options.\n\
          - Answers are returned as arrays of labels; set `multiple: true` to allow \
          selecting more than one.\n\
+         - Use `multiple: true` when the user could reasonably want MORE THAN ONE \
+         option (e.g. \"which features to add?\", \"which files to modify?\", \
+         \"which tests to run?\"). Use single-select (default) for mutually \
+         exclusive choices (e.g. \"which approach?\", \"which language?\").\n\
          - If you recommend a specific option, make it the first option in the list \
          and add \"(Recommended)\" at the end of the label.\n\
          - Ask ONE question at a time. Never batch multiple questions into a single call."
@@ -203,11 +207,37 @@ impl QuestionTool {
         match selection {
             Ok(Some(idx)) if idx == custom_index => {
                 // User chose "Type your own answer" — prompt for free-form input.
-                prompt_custom_answer().await
+                let result = prompt_custom_answer().await;
+                // Echo the custom answer and show thinking indicator.
+                if let Ok(ref r) = result {
+                    if !r.is_error {
+                        eprintln!(
+                            "  {} {}",
+                            console::style("→").green().bold(),
+                            console::style(&r.output).green(),
+                        );
+                        eprintln!(
+                            "  {}",
+                            console::style("thinking…").dim(),
+                        );
+                    }
+                }
+                result
             }
             Ok(Some(idx)) => {
                 // User picked one of the LLM-provided options.
                 let chosen = &raw_clone[idx];
+                // Echo the selection so it appears in the conversation flow.
+                eprintln!(
+                    "  {} {}",
+                    console::style("→").green().bold(),
+                    console::style(chosen).green(),
+                );
+                // Show a thinking indicator so the user knows the agent is processing.
+                eprintln!(
+                    "  {}",
+                    console::style("thinking…").dim(),
+                );
                 Ok(ToolResult {
                     output: format!("User selected: {}", chosen),
                     is_error: false,
@@ -215,6 +245,11 @@ impl QuestionTool {
             }
             _ => {
                 // User pressed Esc or Ctrl-C — treat as cancellation.
+                eprintln!(
+                    "  {} {}",
+                    console::style("→").yellow().bold(),
+                    console::style("cancelled").yellow(),
+                );
                 Ok(ToolResult {
                     output: "User cancelled the selection.".to_string(),
                     is_error: false,
@@ -262,6 +297,11 @@ impl QuestionTool {
         match selection {
             Ok(Some(indices)) if indices.is_empty() => {
                 // User pressed Enter without selecting anything.
+                eprintln!(
+                    "  {} {}",
+                    console::style("→").yellow().bold(),
+                    console::style("(nothing selected)").yellow(),
+                );
                 Ok(ToolResult {
                     output: "(User selected nothing)".to_string(),
                     is_error: false,
@@ -278,7 +318,7 @@ impl QuestionTool {
                     .map(|&i| raw_clone[i].clone())
                     .collect();
 
-                if chose_custom && selected.is_empty() {
+                let result = if chose_custom && selected.is_empty() {
                     // Only custom was picked — prompt for free-form input.
                     prompt_custom_answer().await
                 } else if chose_custom {
@@ -298,10 +338,32 @@ impl QuestionTool {
                         output: format!("User selected: {}", selected.join(", ")),
                         is_error: false,
                     })
+                };
+
+                // Echo the selection and show thinking indicator.
+                if let Ok(ref r) = result {
+                    if !r.is_error {
+                        eprintln!(
+                            "  {} {}",
+                            console::style("→").green().bold(),
+                            console::style(&r.output).green(),
+                        );
+                        eprintln!(
+                            "  {}",
+                            console::style("thinking…").dim(),
+                        );
+                    }
                 }
+
+                result
             }
             _ => {
                 // User pressed Esc or Ctrl-C.
+                eprintln!(
+                    "  {} {}",
+                    console::style("→").yellow().bold(),
+                    console::style("cancelled").yellow(),
+                );
                 Ok(ToolResult {
                     output: "User cancelled the selection.".to_string(),
                     is_error: false,

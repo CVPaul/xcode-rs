@@ -89,7 +89,7 @@ impl Agent for CoderAgent {
             "## What NOT to do\n",
             "- Do not produce placeholder code with TODO comments unless instructed.\n",
             "- Do not ask clarifying questions during execution — make a reasonable decision and proceed.\n",
-            "- If you truly cannot proceed without critical missing information, use the `question` tool to ask ONE concise question with selectable options. Do not list multiple questions. Wait for the answer before asking anything else.\n",
+            "- If you truly cannot proceed without critical missing information, use the `question` tool to ask ONE concise question with selectable options. Do not list multiple questions. Wait for the answer before asking anything else. Set `multiple: true` when the user could want more than one option (features, files, etc.); use single-select for mutually exclusive choices.\n",
             "- Do not repeat the user's instructions back to them.\n",
             "- Do not explain what a tool does — just use it.\n",
             "- NEVER output `[TASK_COMPLETE]` prematurely. Only use it after ALL steps are done and verified.\n"
